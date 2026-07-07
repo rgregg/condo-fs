@@ -3,6 +3,9 @@ name = "condo-fs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
+license = "MIT"
+description = "Mount a Condo Control File Library as a read-only FUSE filesystem"
+repository = "https://github.com/rgregg/condo-fs"
 
 [lib]
 name = "condo_fs"
