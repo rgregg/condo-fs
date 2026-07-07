@@ -86,8 +86,26 @@ impl CondoClient for HttpCondoClient {
         Ok(())
     }
 
-    fn list_folder(&self, _folder_id: u64) -> Result<Vec<Entry>, ClientError> {
-        unimplemented!("Task 6")
+    fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
+        let resp = self
+            .http
+            .get(self.url("/library/get-file-list"))
+            .header("X-Requested-With", "XMLHttpRequest")
+            .query(&[
+                ("mode", "0".to_string()),
+                ("folderID", folder_id.to_string()),
+                ("searchString", String::new()),
+                ("fileTypeSelectID", "0".to_string()),
+                ("startDate", String::new()),
+                ("endDate", String::new()),
+                ("newSearch", "False".to_string()),
+            ])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let text = resp.error_for_status()?.text()?;
+        Ok(parse_file_list(&text)?)
     }
     fn file_meta(&self, _file_id: u64) -> Result<FileMeta, ClientError> {
         unimplemented!("Task 7")
@@ -143,5 +161,38 @@ mod tests {
         });
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
         assert!(matches!(client.login(), Err(ClientError::Auth)));
+    }
+
+    #[test]
+    fn list_folder_parses_entries() {
+        let server = MockServer::start();
+        let body = std::fs::read_to_string("tests/fixtures/files.json").unwrap();
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/library/get-file-list")
+                .query_param("folderID", "262667")
+                .query_param("mode", "0")
+                .query_param("newSearch", "False")
+                .header("x-requested-with", "XMLHttpRequest");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(body);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let entries = client.list_folder(262667).unwrap();
+        m.assert();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0], Entry::File { id: 5369528, .. }));
+    }
+
+    #[test]
+    fn list_folder_302_to_login_is_auth_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/library/get-file-list");
+            then.status(302).header("location", "/login?NextPage=x");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(client.list_folder(1), Err(ClientError::Auth)));
     }
 }
