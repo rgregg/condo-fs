@@ -119,6 +119,63 @@ install -Dm755 target/release/condo-fs ~/.local/bin/condo-fs
 systemctl --user restart condo-fs
 ```
 
+## Windows access via WSL2
+
+There is no native Windows build (Windows has no FUSE), but condo-fs runs **unmodified inside
+WSL2**, and the mount is then reachable from Windows Explorer. WSL1 will not work — it has no
+`/dev/fuse`.
+
+1. **Install WSL2** with a Linux distro. In an elevated PowerShell:
+
+   ```powershell
+   wsl --install
+   ```
+
+   Reboot if prompted, then confirm the distro is version 2:
+
+   ```powershell
+   wsl -l -v
+   ```
+
+2. **Inside the WSL distro**, install FUSE, then build and install condo-fs exactly as in the
+   sections above:
+
+   ```bash
+   sudo apt update && sudo apt install -y fuse3
+   # ... then the cargo build / install steps from "Install & auto-mount on login"
+   ```
+
+3. **Put your credentials on the Linux side** (e.g. `~/tokens/condo-control.txt` *within* the
+   distro, not under `/mnt/c/...`), so file permissions work correctly. `chmod 600` it.
+
+4. **(Optional) Enable systemd** so the auto-mount user service works. Edit `/etc/wsl.conf`:
+
+   ```ini
+   [boot]
+   systemd=true
+   ```
+
+   Then from PowerShell `wsl --shutdown`, reopen the distro, and set up the service as in
+   [Install & auto-mount on login](#install--auto-mount-on-login-systemd). If you'd rather not
+   enable systemd, just run the mount manually (the [Usage](#usage) command) or add it to your
+   shell profile.
+
+5. **Access from Windows.** Open File Explorer and browse to:
+
+   ```
+   \\wsl$\Ubuntu\home\<you>\condo
+   ```
+
+   (or `\\wsl.localhost\Ubuntu\home\<you>\condo` on newer Windows). Replace `Ubuntu` with your
+   distro name. You can right-click → *Map network drive* to give it a drive letter.
+
+**Notes:**
+- The mount only exists while it is running inside WSL — via the systemd service or your manual
+  command. If WSL shuts down when idle, reopening the distro restarts the service (with systemd
+  enabled + lingering).
+- Keep the on-disk cache on the Linux side (the default `~/.cache/condo-fs` already is);
+  reading files stays read-only as usual.
+
 ## How it works
 
 - Logs in via Condo Control's form endpoint and holds the session cookie; re-authenticates
