@@ -1,16 +1,16 @@
 [package]
-name = "condo-fuse"
+name = "condo-fs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
 
 [lib]
-name = "condo_fuse"
+name = "condo_fs"
 path = "src/lib.rs"
 
 [[bin]]
-name = "condo-fuse"
-path = "src/bin/condo-fuse.rs"
+name = "condo-fs"
+path = "src/bin/condo-fs.rs"
 
 [dependencies]
 fuser = { version = "0.15", default-features = false }

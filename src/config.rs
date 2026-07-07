@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
-    name = "condo-fuse",
+    name = "condo-fs",
     about = "Mount a Condo Control File Library as a read-only filesystem"
 )]
 pub struct Cli {
@@ -61,7 +61,7 @@ impl MountArgs {
         self.cache_dir.clone().unwrap_or_else(|| {
             dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("condo-fuse")
+                .join("condo-fs")
         })
     }
     pub fn meta_ttl_dur(&self) -> Duration {

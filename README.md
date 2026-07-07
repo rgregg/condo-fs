@@ -1,11 +1,11 @@
-# condo-fuse
+# condo-fs
 
 Mount a [Condo Control](https://app.condocontrol.com) association **File Library** as a
 read-only [FUSE](https://www.kernel.org/doc/html/latest/filesystems/fuse.html) filesystem,
 so you can browse and read library documents with ordinary file tools instead of the web UI.
 
 It is a reusable Rust library (a FUSE-agnostic Condo Control API client) plus a thin
-`condo-fuse` mount binary.
+`condo-fs` mount binary.
 
 ## Status
 
@@ -41,7 +41,7 @@ cargo build --release
 
 ```bash
 mkdir -p /tmp/condo
-./target/release/condo-fuse mount \
+./target/release/condo-fs mount \
   --credentials ~/tokens/condo-control.txt \
   --root 137473 \
   /tmp/condo
@@ -63,7 +63,7 @@ Find your library's root folder ID in the web UI URL:
 |------|---------|---------|
 | `--credentials <path>` | `~/tokens/condo-control.txt` | Credentials file |
 | `--root <id>` | `137473` | Root library folder ID |
-| `--cache-dir <dir>` | `~/.cache/condo-fuse` | On-disk content cache |
+| `--cache-dir <dir>` | `~/.cache/condo-fs` | On-disk content cache |
 | `--meta-ttl <seconds>` | `60` | How long directory listings are cached before refetching |
 
 Set `RUST_LOG=info` (or `debug`) for logging.
@@ -76,24 +76,24 @@ Mount the library automatically every time you log in, using a systemd **user** 
 
    ```bash
    cargo build --release
-   install -Dm755 target/release/condo-fuse ~/.local/bin/condo-fuse
+   install -Dm755 target/release/condo-fs ~/.local/bin/condo-fs
    ```
 
-2. Install the service unit (a template lives in [`packaging/condo-fuse.service`](packaging/condo-fuse.service)):
+2. Install the service unit (a template lives in [`packaging/condo-fs.service`](packaging/condo-fs.service)):
 
    ```bash
    mkdir -p ~/.config/systemd/user
-   cp packaging/condo-fuse.service ~/.config/systemd/user/
+   cp packaging/condo-fs.service ~/.config/systemd/user/
    ```
 
-   Edit `~/.config/systemd/user/condo-fuse.service` and set `--root` to your library's root
+   Edit `~/.config/systemd/user/condo-fs.service` and set `--root` to your library's root
    folder ID (and adjust the credentials path or mountpoint if you use different ones).
 
 3. Enable and start it:
 
    ```bash
    systemctl --user daemon-reload
-   systemctl --user enable --now condo-fuse.service
+   systemctl --user enable --now condo-fs.service
    ```
 
 The library is now mounted at `~/condo` and will remount on every login.
@@ -104,19 +104,19 @@ The library is now mounted at `~/condo` and will remount on every login.
 Managing the service:
 
 ```bash
-systemctl --user status condo-fuse      # is it running?
-systemctl --user restart condo-fuse     # remount (after changing options or updating the binary)
-systemctl --user stop condo-fuse        # unmount now
-systemctl --user disable condo-fuse     # stop auto-mounting on login
-journalctl --user -u condo-fuse -f      # live logs
+systemctl --user status condo-fs      # is it running?
+systemctl --user restart condo-fs     # remount (after changing options or updating the binary)
+systemctl --user stop condo-fs        # unmount now
+systemctl --user disable condo-fs     # stop auto-mounting on login
+journalctl --user -u condo-fs -f      # live logs
 ```
 
 To upgrade after pulling new code:
 
 ```bash
 cargo build --release
-install -Dm755 target/release/condo-fuse ~/.local/bin/condo-fuse
-systemctl --user restart condo-fuse
+install -Dm755 target/release/condo-fs ~/.local/bin/condo-fs
+systemctl --user restart condo-fs
 ```
 
 ## How it works
@@ -133,12 +133,12 @@ systemctl --user restart condo-fuse
 
 ## Using the client as a library
 
-The `condo_fuse::client::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
+The `condo_fs::client::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
 and can be reused directly:
 
 ```rust
-use condo_fuse::client::{CondoClient, HttpCondoClient};
-use condo_fuse::credentials::Credentials;
+use condo_fs::client::{CondoClient, HttpCondoClient};
+use condo_fs::credentials::Credentials;
 
 let creds = Credentials::from_file("~/tokens/condo-control.txt".as_ref())?;
 let client = HttpCondoClient::new("https://app.condocontrol.com", creds)?;

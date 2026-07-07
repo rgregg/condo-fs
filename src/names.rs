@@ -134,7 +134,10 @@ mod tests {
     #[test]
     fn file_display_name_appends_extension() {
         assert_eq!(
-            file_display_name("01/09/25 Board Minutes", "/shared/images/icons/pdf-128x128.png"),
+            file_display_name(
+                "01/09/25 Board Minutes",
+                "/shared/images/icons/pdf-128x128.png"
+            ),
             "01-09-25 Board Minutes.pdf"
         );
         // does not double up if already present

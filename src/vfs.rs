@@ -177,7 +177,7 @@ impl<C: CondoClient> Vfs<C> {
         let mut inner = self.inner.lock().unwrap();
         // Clear the stale name index for this dir before rebuilding.
         inner.child_by_name.retain(|(p, _), _| *p != ino);
-        for (entry, name) in entries.into_iter().zip(display.into_iter()) {
+        for (entry, name) in entries.into_iter().zip(display) {
             let (key, node) = match entry {
                 Entry::Folder { id, .. } => (NodeKey::Folder(id), Node::Folder { id }),
                 Entry::File {
@@ -300,9 +300,9 @@ impl<C: CondoClient> Vfs<C> {
         let path = match self.cache.get(id, &date) {
             Some(p) => p,
             None => self.cache.store_from(id, &date, |f| {
-                self.client.download_file(id, f).map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::Other, "download failed")
-                })?;
+                self.client
+                    .download_file(id, f)
+                    .map_err(|_| std::io::Error::other("download failed"))?;
                 Ok(())
             })?,
         };
@@ -421,7 +421,9 @@ mod tests {
     #[test]
     fn lookup_then_read_returns_file_bytes() {
         let (vfs, _d) = fixture_vfs();
-        let attr = vfs.lookup(fuser::FUSE_ROOT_ID, "01-09-25 Notes.pdf").unwrap();
+        let attr = vfs
+            .lookup(fuser::FUSE_ROOT_ID, "01-09-25 Notes.pdf")
+            .unwrap();
         assert_eq!(attr.kind, FileType::RegularFile);
         assert_eq!(attr.size, 13);
         let data = vfs.read(attr.ino, 0, 100).unwrap();

@@ -41,7 +41,7 @@ impl HttpCondoClient {
         let http = Client::builder()
             .cookie_store(true)
             .redirect(Policy::none()) // we must see 302s to detect auth state
-            .user_agent("condo-fuse/0.1")
+            .user_agent("condo-fs/0.1")
             .build()?;
         Ok(HttpCondoClient {
             http,
@@ -55,10 +55,7 @@ impl HttpCondoClient {
     }
 
     /// Run `op`; if it fails with an expired session, re-authenticate once and retry.
-    fn with_reauth<T>(
-        &self,
-        op: impl Fn() -> Result<T, ClientError>,
-    ) -> Result<T, ClientError> {
+    fn with_reauth<T>(&self, op: impl Fn() -> Result<T, ClientError>) -> Result<T, ClientError> {
         match op() {
             Err(ClientError::Auth) => {
                 log::info!("session expired; re-authenticating");
@@ -338,6 +335,10 @@ mod tests {
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
         let res = client.list_folder(9);
         assert!(matches!(res, Err(ClientError::Auth)));
-        assert_eq!(login_hits.hits(), 1, "should re-auth exactly once then give up");
+        assert_eq!(
+            login_hits.hits(),
+            1,
+            "should re-auth exactly once then give up"
+        );
     }
 }
