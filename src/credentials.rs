@@ -1,10 +1,20 @@
 use std::path::Path;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
+}
+
+// Manual Debug so the password is never written to logs or panics.
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -47,6 +57,18 @@ mod tests {
         let c = Credentials::from_file(Path::new("tests/fixtures/credentials.txt")).unwrap();
         assert_eq!(c.username, "ryan@example.com");
         assert_eq!(c.password, "p@ss^word#1 two");
+    }
+
+    #[test]
+    fn debug_redacts_password() {
+        let c = Credentials {
+            username: "u@e.com".into(),
+            password: "supersecret".into(),
+        };
+        let rendered = format!("{c:?}");
+        assert!(rendered.contains("u@e.com"));
+        assert!(!rendered.contains("supersecret"));
+        assert!(rendered.contains("redacted"));
     }
 
     #[test]
