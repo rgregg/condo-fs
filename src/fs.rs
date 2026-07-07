@@ -50,7 +50,11 @@ impl<C: CondoClient> Filesystem for CondoFs<C> {
             None => return reply.error(libc::ENOENT),
         };
         match self.vfs.lookup(parent, name) {
-            Ok(attr) => reply.entry(&TTL, &to_file_attr(&attr, self.vfs.uid(), self.vfs.gid()), 0),
+            Ok(attr) => reply.entry(
+                &TTL,
+                &to_file_attr(&attr, self.vfs.uid(), self.vfs.gid()),
+                0,
+            ),
             Err(e) => reply.error(e.errno()),
         }
     }

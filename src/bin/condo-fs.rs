@@ -1,10 +1,10 @@
 use clap::Parser;
-use condo_fuse::cache::ContentCache;
-use condo_fuse::client::{CondoClient, HttpCondoClient};
-use condo_fuse::config::{Cli, Command, MountArgs};
-use condo_fuse::credentials::Credentials;
-use condo_fuse::fs::CondoFs;
-use condo_fuse::vfs::Vfs;
+use condo_fs::cache::ContentCache;
+use condo_fs::client::{CondoClient, HttpCondoClient};
+use condo_fs::config::{Cli, Command, MountArgs};
+use condo_fs::credentials::Credentials;
+use condo_fs::fs::CondoFs;
+use condo_fs::vfs::Vfs;
 use fuser::MountOption;
 
 fn main() {

@@ -1,8 +1,8 @@
 // Opt-in live test. Run with:
 //   CONDO_LIVE=1 CONDO_CREDS=~/tokens/condo-control.txt cargo test --test live_smoke -- --nocapture
-use condo_fuse::client::{CondoClient, HttpCondoClient};
-use condo_fuse::credentials::Credentials;
-use condo_fuse::model::Entry;
+use condo_fs::client::{CondoClient, HttpCondoClient};
+use condo_fs::credentials::Credentials;
+use condo_fs::model::Entry;
 use std::path::PathBuf;
 
 fn creds_path() -> PathBuf {
