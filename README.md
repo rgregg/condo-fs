@@ -68,6 +68,57 @@ Find your library's root folder ID in the web UI URL:
 
 Set `RUST_LOG=info` (or `debug`) for logging.
 
+## Install & auto-mount on login (systemd)
+
+Mount the library automatically every time you log in, using a systemd **user** service.
+
+1. Build and install the binary to a stable location:
+
+   ```bash
+   cargo build --release
+   install -Dm755 target/release/condo-fuse ~/.local/bin/condo-fuse
+   ```
+
+2. Install the service unit (a template lives in [`packaging/condo-fuse.service`](packaging/condo-fuse.service)):
+
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp packaging/condo-fuse.service ~/.config/systemd/user/
+   ```
+
+   Edit `~/.config/systemd/user/condo-fuse.service` and set `--root` to your library's root
+   folder ID (and adjust the credentials path or mountpoint if you use different ones).
+
+3. Enable and start it:
+
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now condo-fuse.service
+   ```
+
+The library is now mounted at `~/condo` and will remount on every login.
+
+> To also start it at boot **before** you log in (e.g. for SSH access), enable lingering:
+> `sudo loginctl enable-linger "$USER"`.
+
+Managing the service:
+
+```bash
+systemctl --user status condo-fuse      # is it running?
+systemctl --user restart condo-fuse     # remount (after changing options or updating the binary)
+systemctl --user stop condo-fuse        # unmount now
+systemctl --user disable condo-fuse     # stop auto-mounting on login
+journalctl --user -u condo-fuse -f      # live logs
+```
+
+To upgrade after pulling new code:
+
+```bash
+cargo build --release
+install -Dm755 target/release/condo-fuse ~/.local/bin/condo-fuse
+systemctl --user restart condo-fuse
+```
+
 ## How it works
 
 - Logs in via Condo Control's form endpoint and holds the session cookie; re-authenticates

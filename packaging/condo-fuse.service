@@ -1,0 +1,21 @@
+[Unit]
+Description=condo-fuse: mount Condo Control File Library at ~/condo
+Documentation=https://github.com/rgregg/condo-fs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+# Ensure the mountpoint exists before mounting.
+ExecStartPre=/bin/mkdir -p %h/condo
+# Set --root to YOUR library's root folder ID (from the web UI URL
+# .../library/view-folder?folderID=<ID>). %h expands to your home directory.
+ExecStart=%h/.local/bin/condo-fuse mount --credentials %h/tokens/condo-control.txt --root 137473 %h/condo
+# Always try to unmount cleanly when the service stops (leading - ignores errors).
+ExecStopPost=-/usr/bin/fusermount3 -u %h/condo
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
