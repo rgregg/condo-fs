@@ -107,11 +107,55 @@ impl CondoClient for HttpCondoClient {
         let text = resp.error_for_status()?.text()?;
         Ok(parse_file_list(&text)?)
     }
-    fn file_meta(&self, _file_id: u64) -> Result<FileMeta, ClientError> {
-        unimplemented!("Task 7")
+    fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError> {
+        // GET but read only the headers; drop the response without consuming the body.
+        let resp = self
+            .http
+            .get(self.url("/library/download-file"))
+            .query(&[("fileRecordID", file_id.to_string())])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let resp = resp.error_for_status()?;
+        let size = resp.content_length().unwrap_or(0);
+        let filename = resp
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_disposition_filename);
+        // resp dropped here without reading the body.
+        Ok(FileMeta { size, filename })
     }
-    fn download_file(&self, _file_id: u64, _out: &mut dyn Write) -> Result<u64, ClientError> {
-        unimplemented!("Task 7")
+
+    fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError> {
+        let resp = self
+            .http
+            .get(self.url("/library/download-file"))
+            .query(&[("fileRecordID", file_id.to_string())])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let mut resp = resp.error_for_status()?;
+        let n = resp.copy_to(out)?;
+        Ok(n)
+    }
+}
+
+fn parse_content_disposition_filename(header: &str) -> Option<String> {
+    // e.g. attachment; filename="01/09/25 Board Minutes.pdf"
+    let idx = header.to_ascii_lowercase().find("filename=")?;
+    let rest = &header[idx + "filename=".len()..];
+    let rest = rest.trim();
+    let name = rest
+        .strip_prefix('"')
+        .and_then(|s| s.split('"').next())
+        .unwrap_or(rest);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
     }
 }
 
@@ -194,5 +238,45 @@ mod tests {
         });
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
         assert!(matches!(client.list_folder(1), Err(ClientError::Auth)));
+    }
+
+    #[test]
+    fn file_meta_reads_length_and_filename() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/library/download-file")
+                .query_param("fileRecordID", "5369528");
+            then.status(200)
+                .header("content-length", "279033")
+                .header(
+                    "content-disposition",
+                    "attachment; filename=\"01/09/25 Board Minutes.pdf\"",
+                )
+                .header("content-type", "application/pdf")
+                .body(vec![0u8; 279033]);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let meta = client.file_meta(5369528).unwrap();
+        m.assert();
+        assert_eq!(meta.size, 279033);
+        assert_eq!(meta.filename.as_deref(), Some("01/09/25 Board Minutes.pdf"));
+    }
+
+    #[test]
+    fn download_file_writes_all_bytes() {
+        let server = MockServer::start();
+        let payload = b"%PDF-1.7 hello".to_vec();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/library/download-file")
+                .query_param("fileRecordID", "42");
+            then.status(200).body(payload.clone());
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let mut buf: Vec<u8> = Vec::new();
+        let n = client.download_file(42, &mut buf).unwrap();
+        assert_eq!(n as usize, payload.len());
+        assert_eq!(buf, payload);
     }
 }
