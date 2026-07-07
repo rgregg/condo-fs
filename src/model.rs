@@ -33,28 +33,33 @@ struct RawRow {
     name: String,
     #[serde(rename = "Date")]
     date: String,
-    #[serde(rename = "Options")]
-    options: u8,
+    #[serde(rename = "Link")]
+    link: String,
 }
 
 pub fn parse_file_list(json: &str) -> Result<Vec<Entry>, serde_json::Error> {
     let rows: Vec<RawRow> = serde_json::from_str(json)?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| match r.options {
-            2 => Some(Entry::Folder {
-                id: r.id,
-                name: r.name,
-            }),
-            1 => Some(Entry::File {
-                id: r.id,
-                key: r.key,
-                name: r.name,
-                date: r.date,
-                thumbnail: r.thumbnail,
-            }),
-            _ => {
-                log::warn!("skipping row {} with unknown Options={}", r.id, r.options);
+        .filter_map(|r| {
+            // `Options` is a permissions bitmask, NOT a type discriminator — folders
+            // appear with Options 0 or 2. The reliable signal is the Link URL:
+            // folders point at view-folder, files at view-file/download-file.
+            if r.link.contains("view-folder") {
+                Some(Entry::Folder {
+                    id: r.id,
+                    name: r.name,
+                })
+            } else if r.link.contains("view-file") || r.link.contains("download-file") {
+                Some(Entry::File {
+                    id: r.id,
+                    key: r.key,
+                    name: r.name,
+                    date: r.date,
+                    thumbnail: r.thumbnail,
+                })
+            } else {
+                log::warn!("skipping row {} with unrecognized Link {:?}", r.id, r.link);
                 None
             }
         })
@@ -69,12 +74,27 @@ mod tests {
     fn parses_folder_rows() {
         let json = std::fs::read_to_string("tests/fixtures/folders.json").unwrap();
         let entries = parse_file_list(&json).unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(
             entries[0],
             Entry::Folder {
                 id: 162100,
                 name: "Board of Directors".into()
+            }
+        );
+    }
+
+    #[test]
+    fn options_zero_folders_are_still_folders() {
+        // Regression: `Options` is a permissions bitmask, not a type discriminator.
+        // Folders can have Options=0 and must not be dropped.
+        let json = std::fs::read_to_string("tests/fixtures/folders.json").unwrap();
+        let entries = parse_file_list(&json).unwrap();
+        assert_eq!(
+            entries[2],
+            Entry::Folder {
+                id: 141025,
+                name: "Governing Documents".into()
             }
         );
     }

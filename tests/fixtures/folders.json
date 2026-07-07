@@ -1,4 +1,5 @@
 [
  {"ID":162100,"Key":"","Thumbnail":"/shared/images/icons/folder.gif","Name":"Board of Directors","Desc":null,"Date":"","Link":"https://app.condocontrol.com/library/view-folder?folderID=162100","Options":2},
- {"ID":140698,"Key":"","Thumbnail":"/shared/images/icons/folder.gif","Name":"Financial","Desc":"stmts","Date":"","Link":"https://app.condocontrol.com/library/view-folder?folderID=140698","Options":2}
+ {"ID":140698,"Key":"","Thumbnail":"/shared/images/icons/folder.gif","Name":"Financial","Desc":"stmts","Date":"","Link":"https://app.condocontrol.com/library/view-folder?folderID=140698","Options":2},
+ {"ID":141025,"Key":"","Thumbnail":"/shared/images/icons/folder.gif","Name":"Governing Documents","Desc":"Rules","Date":"","Link":"https://app.condocontrol.com/library/view-folder?folderID=141025","Options":0}
 ]

@@ -80,8 +80,11 @@ Returns a JSON **array** mixing folders and files:
   "Options": 1
 }
 ```
-- **`Options`**: `2` = folder, `1` = file. (Corroborated by `Thumbnail` = `folder.gif` and
-  `Link` containing `view-folder` for folders; `view-file.aspx` for files.)
+- **Type discriminator is the `Link` URL**, NOT `Options`. Folders have a `view-folder`
+  link; files have a `view-file.aspx` (or `download-file`) link. `Options` is a
+  permissions bitmask (observed values `0`, `1`, `2`) and folders appear with both `0` and
+  `2` — do not use it to tell folders from files. (`Thumbnail` = `folder.gif` also marks
+  folders but the Link is the reliable signal.)
 - Folders: `Date` empty, `Link` = `…/library/view-folder?folderID=<ID>`.
 - Files: real `Date` (`YYYY-MM-DD HH:MM:SS`), `Key` GUID present, `Thumbnail` encodes type.
 - **`Name` has no extension and may contain `/`.**
