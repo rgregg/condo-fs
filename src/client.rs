@@ -53,6 +53,78 @@ impl HttpCondoClient {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url.trim_end_matches('/'), path)
     }
+
+    /// Run `op`; if it fails with an expired session, re-authenticate once and retry.
+    fn with_reauth<T>(
+        &self,
+        op: impl Fn() -> Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
+        match op() {
+            Err(ClientError::Auth) => {
+                log::info!("session expired; re-authenticating");
+                self.login()?;
+                op()
+            }
+            other => other,
+        }
+    }
+
+    fn list_folder_once(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
+        let resp = self
+            .http
+            .get(self.url("/library/get-file-list"))
+            .header("X-Requested-With", "XMLHttpRequest")
+            .query(&[
+                ("mode", "0".to_string()),
+                ("folderID", folder_id.to_string()),
+                ("searchString", String::new()),
+                ("fileTypeSelectID", "0".to_string()),
+                ("startDate", String::new()),
+                ("endDate", String::new()),
+                ("newSearch", "False".to_string()),
+            ])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let text = resp.error_for_status()?.text()?;
+        Ok(parse_file_list(&text)?)
+    }
+
+    fn file_meta_once(&self, file_id: u64) -> Result<FileMeta, ClientError> {
+        // GET but read only the headers; drop the response without consuming the body.
+        let resp = self
+            .http
+            .get(self.url("/library/download-file"))
+            .query(&[("fileRecordID", file_id.to_string())])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let resp = resp.error_for_status()?;
+        let size = resp.content_length().unwrap_or(0);
+        let filename = resp
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_disposition_filename);
+        // resp dropped here without reading the body.
+        Ok(FileMeta { size, filename })
+    }
+
+    fn download_file_once(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError> {
+        let resp = self
+            .http
+            .get(self.url("/library/download-file"))
+            .query(&[("fileRecordID", file_id.to_string())])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        let mut resp = resp.error_for_status()?;
+        let n = resp.copy_to(out)?;
+        Ok(n)
+    }
 }
 
 impl CondoClient for HttpCondoClient {
@@ -87,59 +159,23 @@ impl CondoClient for HttpCondoClient {
     }
 
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
-        let resp = self
-            .http
-            .get(self.url("/library/get-file-list"))
-            .header("X-Requested-With", "XMLHttpRequest")
-            .query(&[
-                ("mode", "0".to_string()),
-                ("folderID", folder_id.to_string()),
-                ("searchString", String::new()),
-                ("fileTypeSelectID", "0".to_string()),
-                ("startDate", String::new()),
-                ("endDate", String::new()),
-                ("newSearch", "False".to_string()),
-            ])
-            .send()?;
-        if resp.status().is_redirection() {
-            return Err(ClientError::Auth);
-        }
-        let text = resp.error_for_status()?.text()?;
-        Ok(parse_file_list(&text)?)
+        self.with_reauth(|| self.list_folder_once(folder_id))
     }
+
     fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError> {
-        // GET but read only the headers; drop the response without consuming the body.
-        let resp = self
-            .http
-            .get(self.url("/library/download-file"))
-            .query(&[("fileRecordID", file_id.to_string())])
-            .send()?;
-        if resp.status().is_redirection() {
-            return Err(ClientError::Auth);
-        }
-        let resp = resp.error_for_status()?;
-        let size = resp.content_length().unwrap_or(0);
-        let filename = resp
-            .headers()
-            .get(reqwest::header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_disposition_filename);
-        // resp dropped here without reading the body.
-        Ok(FileMeta { size, filename })
+        self.with_reauth(|| self.file_meta_once(file_id))
     }
 
     fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError> {
-        let resp = self
-            .http
-            .get(self.url("/library/download-file"))
-            .query(&[("fileRecordID", file_id.to_string())])
-            .send()?;
-        if resp.status().is_redirection() {
-            return Err(ClientError::Auth);
+        // `out` is `&mut`, which is not `Fn`-friendly, so retry manually.
+        match self.download_file_once(file_id, out) {
+            Err(ClientError::Auth) => {
+                log::info!("session expired; re-authenticating");
+                self.login()?;
+                self.download_file_once(file_id, out)
+            }
+            other => other,
         }
-        let mut resp = resp.error_for_status()?;
-        let n = resp.copy_to(out)?;
-        Ok(n)
     }
 }
 
@@ -278,5 +314,30 @@ mod tests {
         let n = client.download_file(42, &mut buf).unwrap();
         assert_eq!(n as usize, payload.len());
         assert_eq!(buf, payload);
+    }
+
+    #[test]
+    fn list_folder_reauths_once_then_gives_up() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/login");
+            then.status(200);
+        });
+        // get-file-list always reports an expired session.
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/library/get-file-list")
+                .query_param("folderID", "9");
+            then.status(302).header("location", "/login");
+        });
+        // Count login attempts: re-auth must happen exactly once, not loop forever.
+        let login_hits = server.mock(|when, then| {
+            when.method(POST).path("/login/login-post");
+            then.status(302).header("location", "/my/my-home");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let res = client.list_folder(9);
+        assert!(matches!(res, Err(ClientError::Auth)));
+        assert_eq!(login_hits.hits(), 1, "should re-auth exactly once then give up");
     }
 }
