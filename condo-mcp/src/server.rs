@@ -113,7 +113,7 @@ impl CondoMcp {
     /// Merge the per-domain routers. Each domain owns its own file and its own router;
     /// this is the one place they come together, and the only line a new domain touches.
     fn build_router() -> ToolRouter<Self> {
-        Self::library_router()
+        Self::library_router() + Self::calendar_router()
     }
 }
 

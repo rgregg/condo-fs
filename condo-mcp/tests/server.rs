@@ -181,3 +181,101 @@ async fn a_failing_tool_call_does_not_kill_the_server() {
     assert!(!tools.is_empty(), "server died after a failing tool call");
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn list_events_returns_bookings_in_the_range() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let body = std::fs::read_to_string("../condo-api/tests/fixtures/amenity_events.json").unwrap();
+    server.mock(|when, then| {
+        when.method(GET).path("/amenity/json-source/");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(body);
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("list_events").with_arguments(
+                serde_json::json!({ "start": "2025-08-01", "end": "2025-09-30" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "tool errored: {result:?}");
+    let json = serde_json::to_value(&result.structured_content).unwrap();
+    let events = json
+        .as_array()
+        .expect("structured content should be an array");
+    assert_eq!(events.len(), 4);
+    // The parser sorts by start; the fixture's chronologically-earliest entry is
+    // id 7570058 at 2025-08-02T18:00:00, not the fixture's first line.
+    assert_eq!(events[0]["id"], 7570058);
+    assert_eq!(events[0]["title"], "Half of North Beach Shelter booked");
+    assert_eq!(events[0]["start"], "2025-08-02T18:00:00");
+    assert_eq!(events[0]["all_day"], false);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn list_events_converts_dates_to_unix_seconds() {
+    // The endpoint 302s on ISO dates, so the conversion is load-bearing, not cosmetic.
+    let server = MockServer::start();
+    mock_login(&server);
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/amenity/json-source/")
+            .query_param("start", "1754006400")
+            .query_param("end", "1756598400");
+        then.status(200).body("[]");
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("list_events").with_arguments(
+                serde_json::json!({ "start": "2025-08-01", "end": "2025-08-31" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    m.assert();
+    assert_ne!(result.is_error, Some(true));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unparseable_date_is_a_tool_error_not_a_panic() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("list_events").with_arguments(
+                serde_json::json!({ "start": "last Tuesday" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await;
+
+    assert!(
+        result.is_err() || result.unwrap().is_error == Some(true),
+        "a bad date must be reported, not accepted"
+    );
+    // The server must still be answering.
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(!tools.is_empty());
+    client.cancel().await.unwrap();
+}

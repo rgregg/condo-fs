@@ -473,6 +473,7 @@ dependencies = [
 name = "condo-api"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "dirs",
  "env_logger",
@@ -504,6 +505,7 @@ name = "condo-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "condo-api",
  "env_logger",

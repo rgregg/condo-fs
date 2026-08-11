@@ -1,8 +1,9 @@
+pub mod calendar;
 pub mod library;
 
 use crate::credentials::Credentials;
 use crate::error::ClientError;
-use crate::model::{Entry, FileMeta};
+use crate::model::{Entry, Event, FileMeta};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
@@ -12,6 +13,8 @@ pub trait CondoClient {
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError>;
     fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError>;
     fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError>;
+    /// List amenity bookings between two instants, given as Unix seconds.
+    fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError>;
 }
 
 pub struct HttpCondoClient {
@@ -163,6 +166,10 @@ impl CondoClient for HttpCondoClient {
             }
             other => other,
         }
+    }
+
+    fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError> {
+        self.with_reauth(|| self.list_events_once(start, end))
     }
 }
 

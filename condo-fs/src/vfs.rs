@@ -333,7 +333,7 @@ fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use condo_api::FileMeta;
+    use condo_api::{Event, FileMeta};
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -364,6 +364,9 @@ mod tests {
             let (bytes, _) = self.files.get(&file_id).ok_or(ClientError::NotFound)?;
             out.write_all(bytes)?;
             Ok(bytes.len() as u64)
+        }
+        fn list_events(&self, _start: i64, _end: i64) -> Result<Vec<Event>, ClientError> {
+            unimplemented!("the FUSE layer never lists calendar events")
         }
     }
 

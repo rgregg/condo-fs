@@ -228,6 +228,11 @@ Currently available tools:
   Takes an optional `folder_id`; omit it to list the configured root folder. Returns each
   entry's kind (`folder`/`file`), id, name, and modification date (files only). File
   contents cannot be read yet.
+- **`list_events`** — list bookings on the association's amenity calendar (shelters,
+  docks, the clubhouse, etc.) between two dates. Takes optional `start`/`end` as
+  `YYYY-MM-DD`, defaulting to today through 60 days out. Results are sorted by start time.
+  Titles name the facility booked, not the resident who booked it, and Condo Control does
+  not expose booking details to a resident account, so there is no `get_event`.
 
 Build it the same way as `condo-fs`:
 
