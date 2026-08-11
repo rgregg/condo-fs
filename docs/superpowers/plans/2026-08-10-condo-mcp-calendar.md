@@ -636,3 +636,16 @@ established that Condo Control has no general events calendar and that
 booking details are permission-gated, so get_event is not implementable
 and was cut from the design."
 ```
+
+---
+
+## Follow-up carried out of this plan
+
+**Long bookings starting well before the requested range may be missed.** The overlap filter
+can only keep what the server returns, and the fetch window reaches just one day before
+`start_date`. If the endpoint selects events by their *start* rather than by overlap, a
+week-long reservation that began before that window will never be fetched — the filter cannot
+recover it. Whether `/amenity/json-source/` selects by start or by overlap is not knowable
+from the captured fixture and was not probed. Resolve it with a targeted probe (request a
+narrow range that falls inside a known multi-day booking and see whether it comes back) before
+widening the start bound further, since widening trades against response size.
