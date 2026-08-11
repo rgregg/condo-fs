@@ -18,6 +18,15 @@ pub struct CondoMcp {
 }
 
 impl CondoMcp {
+    /// Build a `CondoMcp`, constructing the underlying blocking `reqwest` client.
+    ///
+    /// # Panics
+    ///
+    /// `HttpCondoClient::new` builds a blocking `reqwest` client, which panics if it is
+    /// constructed from inside a running Tokio runtime (a nested-runtime check). Do not call
+    /// this directly from an `async fn` or `#[tokio::main]` body. Instead, run it inside
+    /// `tokio::task::spawn_blocking`, as every call site in this crate does — see
+    /// `main.rs` and the `test_client` helper in this module's tests.
     pub fn new(
         base_url: impl Into<String>,
         creds: Credentials,
@@ -74,12 +83,20 @@ impl CondoMcp {
 
     /// Turn a client error into a message an agent can act on.
     pub(crate) fn tool_error(&self, e: ClientError) -> ErrorData {
+        // `NotFound` is a normal result, not a crash (see the error-handling table in
+        // docs/superpowers/specs/2026-08-10-condo-mcp-design.md): the caller asked about
+        // something that doesn't exist, not something the server failed to do. Map it to
+        // `resource_not_found` rather than `internal_error` so it reads as an
+        // invalid-parameter/not-found condition instead of a protocol-level failure.
+        if let ClientError::NotFound = e {
+            return ErrorData::resource_not_found("No such item in Condo Control.", None);
+        }
         let msg = match e {
             ClientError::Auth => format!(
                 "Authentication failed. Check the credentials file at {}.",
                 self.creds_path
             ),
-            ClientError::NotFound => "No such item in Condo Control.".to_string(),
+            ClientError::NotFound => unreachable!("returned above"),
             ClientError::Parse(ref inner) => {
                 log::debug!("parse failure: {inner}");
                 "Unexpected response shape from Condo Control; the site may have changed."

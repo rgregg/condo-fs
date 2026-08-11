@@ -267,10 +267,39 @@ Login is lazy — the credentials file is only read and used on the first tool c
 missing or bad credentials file surfaces as a normal tool error rather than a startup
 crash. All logging goes to stderr; stdout carries only the MCP protocol.
 
+## condo-probe
+
+`condo-probe` is a GET-only exploration tool for discovering Condo Control endpoints that
+`condo-api` doesn't map yet. You give it an explicit list of paths (nothing is crawled and
+no path is ever derived from a response body); it logs in with your real credentials,
+fetches each one, and dumps the raw response verbatim to `--out-dir` (default `probe-out`)
+for inspection.
+
+It is feature-gated because it is a discovery/debugging tool, not something built by
+default:
+
+```bash
+cargo run -p condo-api --features probe --bin condo-probe -- \
+    --xhr /announcements/get-announcement-list /calendar/get-event-list
+```
+
+By default it waits 1000ms between requests (`--delay-ms`); this hits a production system
+you don't own, so raise the delay rather than lower it, and never point it at a tight loop
+of paths without a delay.
+
+**Warnings:**
+
+- Output written to `--out-dir` contains **real resident data** pulled from a live
+  association. It must never be committed — `probe-out/` is gitignored at every depth, but
+  double-check `git status` before committing anything from a probing session regardless.
+- Dumps include response headers verbatim, which means **`set-cookie` headers — live
+  session tokens — are written to disk** in the output files, with your process's default
+  file permissions. Treat the output directory like you would the credentials file itself.
+
 ## Development
 
 ```bash
-cargo test --all     # unit tests (no network), across the whole workspace
+cargo test --all --all-features     # unit tests (no network), across the whole workspace, including condo-probe
 CONDO_LIVE=1 cargo test -p condo-api --test live_smoke -- --nocapture   # opt-in live login/list test
 ```
 
