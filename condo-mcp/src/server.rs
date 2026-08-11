@@ -54,7 +54,10 @@ impl CondoMcp {
         let logged_in = self.logged_in.clone();
         tokio::task::spawn_blocking(move || {
             {
-                let mut done = logged_in.lock().expect("login mutex poisoned");
+                // A poisoned lock carries no unsound state here — just a `bool` — so
+                // recover it rather than propagating the poison. Worst case a login is
+                // retried (harmless) or, if `*done` was already `true`, skipped as normal.
+                let mut done = logged_in.lock().unwrap_or_else(|e| e.into_inner());
                 if !*done {
                     client.login()?;
                     *done = true;
@@ -63,7 +66,10 @@ impl CondoMcp {
             f(&client)
         })
         .await
-        .expect("blocking client task panicked")
+        // A JoinError here (task panic, or cancellation on shutdown) must not crash the
+        // server or the tool-handler future — map it into the same error channel every
+        // other client failure flows through so it reaches the agent as a tool error.
+        .unwrap_or_else(|e| Err(ClientError::Io(std::io::Error::other(e))))
     }
 
     /// Turn a client error into a message an agent can act on.
@@ -110,5 +116,80 @@ impl rmcp::ServerHandler for CondoMcp {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `CondoMcp` with `logged_in` pre-set to `true`, so `with_client` never
+    /// attempts a real login — these tests are about the panic/poison handling around
+    /// the lock and the `spawn_blocking` join, not about the client itself.
+    async fn test_client(logged_in: bool) -> CondoMcp {
+        // See the note in main.rs / tests/server.rs: constructing the blocking reqwest
+        // client directly on this async test's worker thread would nest Tokio runtimes
+        // and panic in debug builds, so build it via spawn_blocking.
+        tokio::task::spawn_blocking(move || {
+            let creds = Credentials {
+                username: "u".into(),
+                password: "p".into(),
+            };
+            CondoMcp {
+                client: Arc::new(HttpCondoClient::new("http://127.0.0.1:1", creds).unwrap()),
+                logged_in: Arc::new(Mutex::new(logged_in)),
+                root: 1,
+                creds_path: "<test>".into(),
+                tool_router: CondoMcp::build_router(),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn with_client_recovers_from_a_poisoned_login_lock() {
+        let mcp = test_client(true).await;
+
+        // Poison the lock the way a panicking `login()` would, without touching the
+        // network: lock it and panic while holding the guard.
+        let logged_in = mcp.logged_in.clone();
+        let poisoning = std::thread::spawn(move || {
+            let _guard = logged_in.lock().unwrap();
+            panic!("simulated panic while holding the login lock");
+        })
+        .join();
+        assert!(poisoning.is_err(), "the setup thread should have panicked");
+        assert!(
+            mcp.logged_in.is_poisoned(),
+            "the lock should now be poisoned"
+        );
+
+        // A previously-broken with_client would propagate this poison as a panic here.
+        let result = mcp.with_client(|_c| Ok(42)).await;
+        assert_eq!(
+            result.unwrap(),
+            42,
+            "recovers the lock instead of panicking"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_panic_inside_with_client_becomes_a_client_error_not_a_crash() {
+        let mcp = test_client(true).await;
+
+        // The `f` closure panicking inside spawn_blocking is exactly the JoinError path
+        // `with_client` must map instead of re-panicking on the async side.
+        let result = mcp
+            .with_client(|_c| -> Result<(), ClientError> { panic!("boom") })
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::Io(_))),
+            "a panicked blocking task should surface as ClientError::Io, got {result:?}"
+        );
+
+        // The server (this same async context) must still be usable afterward.
+        let ok = mcp.with_client(|_c| Ok(7)).await;
+        assert_eq!(ok.unwrap(), 7);
     }
 }

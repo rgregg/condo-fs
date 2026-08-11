@@ -255,11 +255,17 @@ Or, for Claude Code:
 claude mcp add condo -- /path/to/condo-fs/target/release/condo-mcp
 ```
 
-`condo-mcp` shares the same `--credentials`, `--base-url`, and `--root` flags as
-`condo-fs` (see [Options](#options)). Login is lazy — the credentials file is only read
-and used on the first tool call, so a missing or bad credentials file surfaces as a normal
-tool error rather than a startup crash. All logging goes to stderr; stdout carries only the
-MCP protocol.
+### condo-mcp options
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--credentials <path>` | `~/tokens/condo-control.txt` | Credentials file (same format as `condo-fs`; see [Credentials](#credentials)) |
+| `--base-url <url>` | `https://app.condocontrol.com` | Condo Control base URL |
+| `--root <id>` | `137473` | Root library folder ID (same meaning as `condo-fs`'s `--root`) |
+
+Login is lazy — the credentials file is only read and used on the first tool call, so a
+missing or bad credentials file surfaces as a normal tool error rather than a startup
+crash. All logging goes to stderr; stdout carries only the MCP protocol.
 
 ## Development
 

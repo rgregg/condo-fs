@@ -13,6 +13,7 @@ pub struct Args {
     #[arg(long, default_value = "~/tokens/condo-control.txt")]
     pub credentials: String,
 
+    /// Condo Control base URL
     #[arg(long, default_value = "https://app.condocontrol.com")]
     pub base_url: String,
 
