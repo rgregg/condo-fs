@@ -1,8 +1,7 @@
 use clap::Parser;
+use condo_api::{CondoClient, Credentials, HttpCondoClient};
 use condo_fs::cache::ContentCache;
-use condo_fs::client::{CondoClient, HttpCondoClient};
 use condo_fs::config::{Cli, Command, MountArgs};
-use condo_fs::credentials::Credentials;
 use condo_fs::fs::CondoFs;
 use condo_fs::vfs::Vfs;
 use fuser::MountOption;

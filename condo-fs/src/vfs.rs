@@ -1,7 +1,6 @@
 use crate::cache::ContentCache;
-use crate::client::{ClientError, CondoClient};
-use crate::model::Entry;
 use crate::names;
+use condo_api::{ClientError, CondoClient, Entry};
 use fuser::FileType;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -334,7 +333,7 @@ fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::FileMeta;
+    use condo_api::FileMeta;
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 

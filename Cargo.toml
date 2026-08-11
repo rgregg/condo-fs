@@ -1,32 +1,22 @@
-[package]
-name = "condo-fs"
+[workspace]
+resolver = "2"
+members = ["condo-api", "condo-fs"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"
-description = "Mount a Condo Control File Library as a read-only FUSE filesystem"
 repository = "https://github.com/rgregg/condo-fs"
 
-[lib]
-name = "condo_fs"
-path = "src/lib.rs"
-
-[[bin]]
-name = "condo-fs"
-path = "src/bin/condo-fs.rs"
-
-[dependencies]
-fuser = { version = "0.15", default-features = false }
+[workspace.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive"] }
-libc = "0.2"
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
 dirs = "5"
-
-[dev-dependencies]
 httpmock = "0.7"
 tempfile = "3"

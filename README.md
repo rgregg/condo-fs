@@ -4,8 +4,9 @@ Mount a [Condo Control](https://app.condocontrol.com) association **File Library
 read-only [FUSE](https://www.kernel.org/doc/html/latest/filesystems/fuse.html) filesystem,
 so you can browse and read library documents with ordinary file tools instead of the web UI.
 
-It is a reusable Rust library (a FUSE-agnostic Condo Control API client) plus a thin
-`condo-fs` mount binary.
+It is a Cargo workspace: a reusable, FUSE-agnostic Condo Control API client crate
+(`condo-api`) plus a thin `condo-fs` mount binary built on top of it. See
+[Workspace layout](#workspace-layout).
 
 ## Status
 
@@ -188,14 +189,24 @@ WSL2**, and the mount is then reachable from Windows Explorer. WSL1 will not wor
 - Files download whole on first read (the server does not support HTTP range requests) and are
   cached on disk keyed by file id + modified date, so an unchanged file is fetched only once.
 
+## Workspace layout
+
+This repo is a Cargo workspace with three crates:
+
+- **`condo-api`** — the Condo Control HTTP client: login/session handling, re-auth on
+  session expiry, and the response models (`Entry`, `FileMeta`) and errors (`ClientError`).
+  FUSE-agnostic and reusable by any consumer.
+- **`condo-fs`** — the FUSE filesystem and `condo-fs` mount binary, built on `condo-api`.
+- **`condo-mcp`** — forthcoming: an MCP server exposing the same Condo Control File Library
+  over `condo-api`.
+
 ## Using the client as a library
 
-The `condo_fs::client::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
+The `condo_api::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
 and can be reused directly:
 
 ```rust
-use condo_fs::client::{CondoClient, HttpCondoClient};
-use condo_fs::credentials::Credentials;
+use condo_api::{CondoClient, Credentials, HttpCondoClient};
 
 let creds = Credentials::from_file("~/tokens/condo-control.txt".as_ref())?;
 let client = HttpCondoClient::new("https://app.condocontrol.com", creds)?;
@@ -206,8 +217,8 @@ let entries = client.list_folder(137473)?;
 ## Development
 
 ```bash
-cargo test          # unit tests (no network)
-CONDO_LIVE=1 cargo test --test live_smoke -- --nocapture   # opt-in live login/list test
+cargo test --all     # unit tests (no network), across the whole workspace
+CONDO_LIVE=1 cargo test -p condo-api --test live_smoke -- --nocapture   # opt-in live login/list test
 ```
 
 Design and implementation notes live in `docs/superpowers/`.

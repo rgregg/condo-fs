@@ -437,21 +437,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "condo-fs"
+name = "condo-api"
 version = "0.1.0"
 dependencies = [
- "clap",
  "dirs",
- "env_logger",
- "fuser",
  "httpmock",
- "libc",
  "log",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "condo-fs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "condo-api",
+ "dirs",
+ "env_logger",
+ "fuser",
+ "libc",
+ "log",
+ "tempfile",
 ]
 
 [[package]]
