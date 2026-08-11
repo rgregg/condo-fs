@@ -142,12 +142,24 @@ does not report an attachment as unreadable.
 
 ### Calendar
 
-**`list_events`** — `{ start: date, end: date, calendar?: string }`
-Returns `[{ id, title, start, end, all_day, location, calendar }]` sorted by start time.
-`start`/`end` default to today and today + 60 days.
+Discovery (2026-08-10) established that Condo Control has no general events calendar. The
+calendar is the **amenity booking calendar**: reservations of association facilities. The
+feed is `GET /amenity/json-source/?filter=&start=<unix>&end=<unix>` — FullCalendar's event
+source convention, taking **Unix-second** timestamps and returning a clean JSON array of
+`{ id, title, start, end, allDay, color, textColor, isEventOwner, isLinkedBooking, isHoliday }`.
+Titles name the facility and never the resident who booked it (`"Indian Cove Marina Guest
+Dock #1 booked"`), so the feed carries no personal data.
 
-**`get_event`** — `{ id: int }`
-Returns `{ id, title, start, end, all_day, location, calendar, description }`.
+**`list_events`** — `{ start?: date, end?: date }`
+Returns `[{ id, title, start, end, all_day, is_holiday, is_mine }]` sorted by start time.
+`start`/`end` default to today and today + 60 days, and are converted to Unix seconds for
+the request. `color`/`textColor` are display concerns and are dropped; `isLinkedBooking` is
+an internal flag with no meaning to a caller and is dropped too.
+
+**`get_event` is not implementable and is cut from the design.** The amenity page sets
+`CanViewDetailsOfAnyBooking = 'False'` for a normal resident account, so booking details are
+permission-gated and a detail tool would fail for every booking the user does not own. The
+list feed already carries everything a caller can legitimately see.
 
 ### Conventions across all tools
 

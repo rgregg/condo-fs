@@ -1,0 +1,50 @@
+[
+  {
+    "id": 7543190,
+    "title": "All of North Beach Shelter booked",
+    "start": "2025-08-24T14:00:00",
+    "end": "2025-08-24T19:00:00",
+    "allDay": false,
+    "color": "#C0504D",
+    "textColor": "#FFFFFF",
+    "isEventOwner": false,
+    "isLinkedBooking": false,
+    "isHoliday": false
+  },
+  {
+    "id": 7493900,
+    "title": "Clubhouse & Gazebo booked",
+    "start": "2025-08-31T10:00:00",
+    "end": "2025-08-31T15:00:00",
+    "allDay": false,
+    "color": "#4F81BD",
+    "textColor": "#FFFFFF",
+    "isEventOwner": false,
+    "isLinkedBooking": false,
+    "isHoliday": false
+  },
+  {
+    "id": 7570058,
+    "title": "Half of North Beach Shelter booked",
+    "start": "2025-08-02T18:00:00",
+    "end": "2025-08-02T23:00:00",
+    "allDay": false,
+    "color": "#9BBB59",
+    "textColor": "#FFFFFF",
+    "isEventOwner": false,
+    "isLinkedBooking": false,
+    "isHoliday": false
+  },
+  {
+    "id": 7504669,
+    "title": "Indian Cove Marina Guest Dock #1 booked",
+    "start": "2025-08-08T18:00:00",
+    "end": "2025-08-10T18:00:00",
+    "allDay": false,
+    "color": "#1F497D",
+    "textColor": "#FFFFFF",
+    "isEventOwner": false,
+    "isLinkedBooking": false,
+    "isHoliday": false
+  }
+]
