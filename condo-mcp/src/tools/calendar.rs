@@ -59,9 +59,9 @@ fn parse_date(s: &str) -> Result<NaiveDate, ErrorData> {
 /// This is never treated as an exact cutoff on its own: the amenity feed's own
 /// timestamps are naive association-local time with no zone attached, so UTC midnight for
 /// a given date can be many hours away from that date's local midnight. Every caller of
-/// this function widens the resulting bound by a day and then filters the parsed events by
-/// comparing their naive local date against the requested `NaiveDate` range — see
-/// `list_events` below.
+/// this function widens the resulting bound (asymmetrically — see `list_events` below,
+/// which covers the full UTC-12..UTC+14 offset range) and then filters the parsed events
+/// by comparing their naive local date/range against the request, not against this value.
 fn utc_midnight(d: NaiveDate) -> i64 {
     d.and_hms_opt(0, 0, 0)
         .expect("midnight is always valid")
@@ -98,20 +98,33 @@ impl CondoMcp {
             Some(ref s) => parse_date(s)?,
             None => today + Duration::days(60),
         };
-        if end_date <= start_date {
+        if end_date < start_date {
             return Err(ErrorData::invalid_params(
-                "The end date must be after the start date.".to_string(),
+                "The end date must not be before the start date.".to_string(),
                 None,
             ));
         }
 
         // The outbound query is Unix seconds with no timezone, but the feed's own
-        // timestamps are naive association-local time. Widen the fetched window by a
-        // day on each side so no booking that belongs in [start_date, end_date] can fall
-        // outside it regardless of the association's UTC offset, then filter the parsed
-        // events below to the exact requested days.
+        // timestamps are naive association-local time. Widen the fetched window so no
+        // booking that overlaps [start_date, end_date] can fall outside it regardless of
+        // the association's real UTC offset, then filter the parsed events below back
+        // down to the exact requested days.
+        //
+        // The widening is asymmetric because `utc_midnight` always measures from UTC, not
+        // from the association's (unknown) local offset. Checked against the real-world
+        // offset range UTC-12..UTC+14:
+        //   - start edge, worst case UTC+14: utc_midnight(start_date - 1) lands at local
+        //     (start_date - 1)T14:00 — still before local start_date's midnight. One day
+        //     back covers every offset in range.
+        //   - end edge, worst case UTC-12: utc_midnight(end_date + 1) — one day forward —
+        //     lands at local end_date T12:00: only halfway through end_date's day, so an
+        //     evening booking on end_date is still missed (exactly the bug this fixes).
+        //     utc_midnight(end_date + 2) — two days forward — lands at local
+        //     (end_date + 1)T12:00, which is past local end_date's midnight rollover, so
+        //     it is required, not merely conservative.
         let query_start = utc_midnight(start_date - Duration::days(1));
-        let query_end = utc_midnight(end_date + Duration::days(1));
+        let query_end = utc_midnight(end_date + Duration::days(2));
         let events = self
             .with_client(move |c| c.list_events(query_start, query_end))
             .await
@@ -120,8 +133,11 @@ impl CondoMcp {
             events
                 .into_iter()
                 .filter(|e| {
-                    let d = e.start.date();
-                    d >= start_date && d <= end_date
+                    // Keep on overlap with [start_date, end_date], not just on the start
+                    // date: a multi-day booking (e.g. a marina dock reserved for several
+                    // days) can start before the requested range and still belong in it.
+                    let event_end = e.end.unwrap_or(e.start).date();
+                    e.start.date() <= end_date && event_end >= start_date
                 })
                 .map(CalendarEvent::from)
                 .collect(),

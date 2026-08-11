@@ -14,6 +14,13 @@ pub trait CondoClient {
     fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError>;
     fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError>;
     /// List amenity bookings between two instants, given as Unix seconds.
+    ///
+    /// `start`/`end` carry no timezone, but the endpoint interprets them — and reports
+    /// `Event::start`/`end` — in the association's own local time, not UTC. Treating
+    /// these as exact boundaries built from UTC midnight will silently miss or include
+    /// bookings near either edge depending on the association's real offset; see the
+    /// longer note on `HttpCondoClient::list_events_once` and how `condo_mcp`'s
+    /// `list_events` tool compensates for it.
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError>;
 }
 

@@ -5,6 +5,18 @@ use crate::model::{parse_event_list, Event};
 impl HttpCondoClient {
     /// One attempt at the amenity calendar feed. `start`/`end` are Unix seconds — the
     /// endpoint 302s to an error page for ISO dates or for a missing range.
+    ///
+    /// There is a timezone asymmetry here that this layer does *not* compensate for:
+    /// `start`/`end` are plain Unix seconds with no timezone attached, but the endpoint
+    /// evidently interprets them (and reports `Event::start`/`end`) in the association's
+    /// own local time, not UTC. A caller that converts calendar dates to Unix seconds at
+    /// UTC midnight and uses them as an exact boundary will silently miss or include
+    /// bookings near either edge, depending on the association's real UTC offset. The
+    /// only current caller, `condo_mcp`'s `list_events` tool
+    /// (`condo-mcp/src/tools/calendar.rs`), compensates by widening the requested window
+    /// and filtering the parsed results by naive date/range instead of trusting this
+    /// call's `start`/`end` as exact cutoffs. Any new caller needs the same treatment;
+    /// this method does not do it itself because it has no timezone data to do it with.
     pub(crate) fn list_events_once(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError> {
         let resp = self
             .http
