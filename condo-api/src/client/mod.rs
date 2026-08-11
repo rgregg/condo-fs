@@ -96,7 +96,15 @@ impl HttpCondoClient {
                 )
             })
             .collect();
-        let body = resp.text().unwrap_or_default();
+        let body = match resp.bytes() {
+            Ok(bytes) => String::from_utf8(bytes.to_vec()).unwrap_or_else(|e| {
+                format!(
+                    "<non-utf8 body: {} bytes could not be decoded as UTF-8>",
+                    e.into_bytes().len()
+                )
+            }),
+            Err(e) => format!("<failed to read body: {e}>"),
+        };
         Ok(RawResponse {
             status,
             final_url,
@@ -267,5 +275,23 @@ pub(crate) mod tests {
         let raw = client.get_raw("/announcements", false).unwrap();
         m.assert();
         assert_eq!(raw.body, "<html></html>");
+    }
+
+    #[test]
+    fn get_raw_marks_undecodable_body_distinctly_from_empty() {
+        // A body that fails to decode as UTF-8 must not read as a genuine empty response —
+        // that would be indistinguishable from an endpoint that legitimately returned nothing.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/library/get-file");
+            then.status(200)
+                .header("content-type", "application/octet-stream")
+                .body([0xff, 0xfe, 0xfd]);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let raw = client.get_raw("/library/get-file", false).unwrap();
+        assert_eq!(raw.status, 200);
+        assert_ne!(raw.body, "");
+        assert!(raw.body.contains("non-utf8"));
     }
 }
