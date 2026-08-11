@@ -23,6 +23,12 @@ has distinct endpoints, JSON shapes, and pagination that must be mapped separate
 
 **Phase 1 (this spec):** workspace refactor, MCP server skeleton, announcements, calendar.
 
+The skeleton carries one file-library tool, `list_folder`, ahead of the files phase. It costs
+roughly thirty lines against a client that is already written and tested, and it is the only
+way to exercise the shared-session, `spawn_blocking`, and lazy-login design end-to-end
+against a real endpoint before parsers are written for endpoints nobody has seen yet. A
+skeleton with no tools cannot be tested as a server.
+
 **Later phases (each gets its own spec):** files (cheapest — the client exists), phone book,
 discussion forums, service requests, violations.
 
@@ -50,6 +56,7 @@ condo-fs/                      workspace root
 │   └── src/
 │       ├── lib.rs
 │       ├── credentials.rs     moved verbatim from condo-fs
+│       ├── paths.rs           expand_tilde, moved out of condo-fs::config
 │       ├── error.rs           ClientError
 │       ├── client.rs          CondoClient trait, HttpCondoClient, login, with_reauth
 │       ├── client/library.rs      list_folder, file_meta, download_file
