@@ -1549,3 +1549,46 @@ Produce from this:
 With those in hand, write `docs/superpowers/plans/2026-08-10-condo-mcp-domains.md` covering
 announcements and calendar, following the `client/library.rs` + `model/library.rs` +
 `tools/library.rs` pattern this plan establishes.
+
+---
+
+## Follow-ups carried out of this plan
+
+Raised by the final whole-branch review, deliberately not fixed here. The first three get
+cheaper the sooner they are done and more expensive with every domain added — settle them in
+the domains plan, not after.
+
+**Trait shape.** `CondoClient` has four methods today. Six more domains at two to three
+methods each makes it an ~18-method trait, and `condo-fs`'s hand-written `MockClient`
+(`condo-fs/src/vfs.rs`) must implement every one of them — including the dozen it will never
+call — or `condo-fs`'s tests stop compiling. Split into per-domain traits (`LibraryClient`,
+`AnnouncementsClient`, …) that `HttpCondoClient` implements and consumers depend on à la
+carte. Nearly free with one domain; painful at three.
+
+**`names` is in the wrong crate.** `names::infer_extension`, `names::sanitize_name`, and
+`names::parse_condo_date` live in `condo-fs` but are model-layer concerns. `condo-mcp` is
+already the second consumer that wants them.
+
+**`FolderEntry` drops `thumbnail`.** `condo-fs` derives the file type from it — which is why
+the mount shows `Board Minutes.pdf` — so an MCP client currently cannot tell a PDF from a
+spreadsheet. Add a `file_type` field once `names` moves.
+
+**Structural read-only enforcement.** `HttpCondoClient.http` is `pub(crate)`, so any future
+`client/<domain>.rs` can reach it and write `.post(...)`. `scripts/guardrails.sh` catches that
+textually; making `http` private behind a `fn get(&self, path) -> RequestBuilder` helper would
+make a non-GET request inexpressible rather than merely detectable.
+
+**Guardrail script weaknesses** (parked, non-blocking): it fails open if a scanned directory
+is renamed or removed — grep's "No such file" is swallowed and the check reports OK, so a
+future restructure silently disables it while CI stays green (fix: a `[ -d ]` precondition per
+directory). The login-POST exemption is line-scoped, so a violation sharing a physical line
+with the exempt text escapes; that requires deliberately pasting the exempt string as a
+comment, so it is not a realistic accident. It is also textual, so `request(Method::POST, …)`
+is not detected — the codebase uses the builder form throughout.
+
+**`tool_error` shape.** Every failure except `NotFound` is a JSON-RPC protocol error rather
+than an `is_error: true` tool result; MCP guidance generally prefers the latter so the model
+sees the failure as tool output. Revisit when the domain tools that make it matter exist.
+
+**`CondoMcp::from_args`** inherits `new`'s nested-runtime panic and has no `# Panics` doc,
+though it is the only path `main.rs` uses.
