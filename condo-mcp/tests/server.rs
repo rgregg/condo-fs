@@ -225,13 +225,20 @@ async fn list_events_returns_bookings_in_the_range() {
 #[tokio::test]
 async fn list_events_converts_dates_to_unix_seconds() {
     // The endpoint 302s on ISO dates, so the conversion is load-bearing, not cosmetic.
+    // The outbound query is widened by a day on each side of the requested
+    // [start, end] range: the feed's own timestamps are naive association-local time
+    // with no zone, so a query built directly from UTC-midnight Unix seconds could miss
+    // in-range bookings depending on the association's UTC offset. 2025-08-01 widens to
+    // 2025-07-31T00:00:00Z (1753920000) and 2025-08-31 widens to 2025-09-01T00:00:00Z
+    // (1756684800); the tool then filters the parsed events back down to the exact
+    // requested days (see list_events_includes_the_full_end_day_and_excludes_outside_the_range).
     let server = MockServer::start();
     mock_login(&server);
     let m = server.mock(|when, then| {
         when.method(GET)
             .path("/amenity/json-source/")
-            .query_param("start", "1754006400")
-            .query_param("end", "1756598400");
+            .query_param("start", "1753920000")
+            .query_param("end", "1756684800");
         then.status(200).body("[]");
     });
     let client = connect(&server, 137473).await;
@@ -254,9 +261,82 @@ async fn list_events_converts_dates_to_unix_seconds() {
 }
 
 #[tokio::test]
+async fn list_events_includes_the_full_end_day_and_excludes_outside_the_range() {
+    // The endpoint's feed carries naive association-local timestamps with no zone, so
+    // the tool widens its outbound query by a day on each side (proven by
+    // list_events_converts_dates_to_unix_seconds) and then filters the parsed results by
+    // comparing each event's naive date against the requested [start, end] range,
+    // inclusive on both ends. This proves the filter half of that mechanism: an event on
+    // the evening of the *end* date must survive (it used to be silently dropped by a
+    // UTC-midnight cutoff), while events that only fall inside the widened fetch window —
+    // one day before start, one day after end — must not leak into the result.
+    let server = MockServer::start();
+    mock_login(&server);
+    let body = serde_json::json!([
+        {
+            "id": 1, "title": "Just before the requested range", "start": "2025-07-31T20:00:00",
+            "end": null, "allDay": false, "color": "", "textColor": "",
+            "isEventOwner": false, "isLinkedBooking": false, "isHoliday": false
+        },
+        {
+            "id": 2, "title": "Evening of the end date", "start": "2025-08-31T19:00:00",
+            "end": null, "allDay": false, "color": "", "textColor": "",
+            "isEventOwner": false, "isLinkedBooking": false, "isHoliday": false
+        },
+        {
+            "id": 3, "title": "Just after the requested range", "start": "2025-09-01T02:00:00",
+            "end": null, "allDay": false, "color": "", "textColor": "",
+            "isEventOwner": false, "isLinkedBooking": false, "isHoliday": false
+        }
+    ])
+    .to_string();
+    server.mock(|when, then| {
+        when.method(GET).path("/amenity/json-source/");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(body);
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("list_events").with_arguments(
+                serde_json::json!({ "start": "2025-08-01", "end": "2025-08-31" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "tool errored: {result:?}");
+    let json = serde_json::to_value(&result.structured_content).unwrap();
+    let events = json
+        .as_array()
+        .expect("structured content should be an array");
+    let ids: Vec<i64> = events.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec![2],
+        "only the end-of-range evening booking should survive: it must not be silently \
+         dropped, and the day-before/day-after entries fetched by the widened query must \
+         be filtered back out"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn an_unparseable_date_is_a_tool_error_not_a_panic() {
     let server = MockServer::start();
     mock_login(&server);
+    // If a bad date were (wrongly) accepted, this is what the tool would call next; by
+    // asserting zero hits below, the test proves the date was rejected *before* any
+    // network call, not merely that a resulting request happened to fail.
+    let m = server.mock(|when, then| {
+        when.method(GET).path("/amenity/json-source/");
+        then.status(200).body("[]");
+    });
     let client = connect(&server, 137473).await;
 
     let result = client
@@ -273,6 +353,11 @@ async fn an_unparseable_date_is_a_tool_error_not_a_panic() {
     assert!(
         result.is_err() || result.unwrap().is_error == Some(true),
         "a bad date must be reported, not accepted"
+    );
+    assert_eq!(
+        m.hits(),
+        0,
+        "a bad date must be rejected before any network call"
     );
     // The server must still be answering.
     let tools = client.list_all_tools().await.unwrap();

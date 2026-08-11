@@ -20,13 +20,9 @@ pub struct Event {
 
 #[derive(Deserialize)]
 struct RawEvent {
-    #[serde(rename = "id")]
     id: u64,
-    #[serde(rename = "title")]
     title: String,
-    #[serde(rename = "start")]
     start: NaiveDateTime,
-    #[serde(rename = "end")]
     end: Option<NaiveDateTime>,
     #[serde(rename = "allDay")]
     all_day: bool,
