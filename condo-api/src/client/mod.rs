@@ -20,6 +20,15 @@ pub struct HttpCondoClient {
     pub(crate) creds: Credentials,
 }
 
+/// A verbatim capture of one GET response, for endpoint discovery.
+#[derive(Debug, Clone)]
+pub struct RawResponse {
+    pub status: u16,
+    pub final_url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
 impl HttpCondoClient {
     pub fn new(
         base_url: impl Into<String>,
@@ -54,6 +63,46 @@ impl HttpCondoClient {
             }
             other => other,
         }
+    }
+
+    /// Fetch `path` and capture the response verbatim.
+    ///
+    /// GET only, by construction — there is no code path here that issues another method.
+    /// Redirects are surfaced, not followed, so an expired session is visible in the
+    /// capture rather than silently yielding a login page.
+    ///
+    /// `xhr` adds the `X-Requested-With: XMLHttpRequest` header that Condo Control's JSON
+    /// endpoints require.
+    pub fn get_raw(&self, path: &str, xhr: bool) -> Result<RawResponse, ClientError> {
+        let url = if path.starts_with("http") {
+            path.to_string()
+        } else {
+            self.url(path)
+        };
+        let mut req = self.http.get(&url);
+        if xhr {
+            req = req.header("X-Requested-With", "XMLHttpRequest");
+        }
+        let resp = req.send()?;
+        let status = resp.status().as_u16();
+        let final_url = resp.url().to_string();
+        let headers = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    v.to_str().unwrap_or("<non-utf8>").to_string(),
+                )
+            })
+            .collect();
+        let body = resp.text().unwrap_or_default();
+        Ok(RawResponse {
+            status,
+            final_url,
+            headers,
+            body,
+        })
     }
 }
 
@@ -155,5 +204,68 @@ pub(crate) mod tests {
         });
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
         assert!(matches!(client.login(), Err(ClientError::Auth)));
+    }
+
+    #[test]
+    fn get_raw_captures_status_headers_and_body() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/announcements/get-announcement-list")
+                .header("x-requested-with", "XMLHttpRequest");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"ID":1}]"#);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let raw = client
+            .get_raw("/announcements/get-announcement-list", true)
+            .unwrap();
+        m.assert();
+        assert_eq!(raw.status, 200);
+        assert_eq!(raw.body, r#"[{"ID":1}]"#);
+        assert!(raw
+            .headers
+            .iter()
+            .any(|(k, v)| k == "content-type" && v.contains("application/json")));
+    }
+
+    #[test]
+    fn get_raw_reports_redirect_without_following_it() {
+        // A 302 to /login means "not authenticated" — the probe must SEE it, not follow it,
+        // so an unauthenticated probe run is obvious in the dumped output.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/calendar/get-event-list");
+            then.status(302).header("location", "/login?NextPage=x");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let raw = client.get_raw("/calendar/get-event-list", false).unwrap();
+        assert_eq!(raw.status, 302);
+        assert!(raw
+            .headers
+            .iter()
+            .any(|(k, v)| k == "location" && v.starts_with("/login")));
+    }
+
+    #[test]
+    fn get_raw_omits_xhr_header_when_not_requested() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(GET).path("/announcements").matches(|req| {
+                !req.headers
+                    .as_ref()
+                    .map(|h| {
+                        h.iter()
+                            .any(|(k, _)| k.eq_ignore_ascii_case("x-requested-with"))
+                    })
+                    .unwrap_or(false)
+            });
+            then.status(200).body("<html></html>");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let raw = client.get_raw("/announcements", false).unwrap();
+        m.assert();
+        assert_eq!(raw.body, "<html></html>");
     }
 }

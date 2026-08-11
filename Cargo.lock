@@ -440,7 +440,9 @@ dependencies = [
 name = "condo-api"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "dirs",
+ "env_logger",
  "httpmock",
  "log",
  "reqwest",
