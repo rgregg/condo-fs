@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["condo-api", "condo-fs"]
+members = ["condo-api", "condo-fs", "condo-mcp"]
 
 [workspace.package]
 version = "0.1.0"

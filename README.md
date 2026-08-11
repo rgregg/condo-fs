@@ -197,8 +197,8 @@ This repo is a Cargo workspace with three crates:
   session expiry, and the response models (`Entry`, `FileMeta`) and errors (`ClientError`).
   FUSE-agnostic and reusable by any consumer.
 - **`condo-fs`** — the FUSE filesystem and `condo-fs` mount binary, built on `condo-api`.
-- **`condo-mcp`** — forthcoming: an MCP server exposing the same Condo Control File Library
-  over `condo-api`.
+- **`condo-mcp`** — a read-only MCP server exposing the same Condo Control File Library
+  over `condo-api`, for MCP clients such as Claude Code. See [condo-mcp](#condo-mcp) below.
 
 ## Using the client as a library
 
@@ -213,6 +213,53 @@ let client = HttpCondoClient::new("https://app.condocontrol.com", creds)?;
 client.login()?;
 let entries = client.list_folder(137473)?;
 ```
+
+## condo-mcp
+
+`condo-mcp` is a read-only [MCP](https://modelcontextprotocol.io) server that exposes a
+Condo Control association to MCP clients (Claude Code, Claude Desktop, etc.) as query
+tools. It speaks MCP over stdio and shares one authenticated `condo-api` session across
+every tool call. There is no write path: every tool is a query, and nothing it does can
+post, submit, or change anything in Condo Control.
+
+Currently available tools:
+
+- **`list_folder`** — list the folders and files directly inside one File Library folder.
+  Takes an optional `folder_id`; omit it to list the configured root folder. Returns each
+  entry's kind (`folder`/`file`), id, name, and modification date (files only). File
+  contents cannot be read yet.
+
+Build it the same way as `condo-fs`:
+
+```bash
+cargo build --release --bin condo-mcp
+```
+
+Register it with an MCP client by pointing at the built binary. For Claude Desktop or any
+client that reads an `mcpServers` config block:
+
+```json
+{
+  "mcpServers": {
+    "condo": {
+      "command": "/path/to/condo-fs/target/release/condo-mcp",
+      "args": ["--credentials", "/home/you/tokens/condo-control.txt"]
+    }
+  }
+}
+```
+
+Or, for Claude Code:
+
+```bash
+claude mcp add condo -- /path/to/condo-fs/target/release/condo-mcp
+```
+
+`condo-mcp` shares the same `--credentials`, `--base-url`, and `--root` flags as
+`condo-fs` (see [Options](#options)). Login is lazy — the credentials file is only read
+and used on the first tool call, so a missing or bad credentials file surfaces as a normal
+tool error rather than a startup crash. All logging goes to stderr; stdout carries only the
+MCP protocol.
 
 ## Development
 
