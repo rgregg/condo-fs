@@ -1,6 +1,8 @@
 use crate::client::HttpCondoClient;
 use crate::error::ClientError;
-use crate::model::{parse_announcement_list, AnnouncementSummary};
+use crate::model::{
+    parse_announcement_detail, parse_announcement_list, AnnouncementDetail, AnnouncementSummary,
+};
 
 impl HttpCondoClient {
     /// One attempt at the announcements list page.
@@ -15,6 +17,22 @@ impl HttpCondoClient {
         }
         let html = resp.error_for_status()?.text()?;
         Ok(parse_announcement_list(&html)?)
+    }
+
+    /// One attempt at a single announcement's detail page.
+    pub(crate) fn get_announcement_once(&self, id: u64) -> Result<AnnouncementDetail, ClientError> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/announcement/detail/{id}")))
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let html = resp.error_for_status()?.text()?;
+        Ok(parse_announcement_detail(id, &html)?)
     }
 }
 
@@ -76,6 +94,35 @@ mod tests {
         assert!(matches!(
             client.list_announcements(),
             Err(ClientError::PageStructure(_))
+        ));
+    }
+
+    #[test]
+    fn get_announcement_fetches_the_detail_page_by_id() {
+        let server = MockServer::start();
+        let body = std::fs::read_to_string("tests/fixtures/announcement_detail.html").unwrap();
+        let m = server.mock(|when, then| {
+            when.method(GET).path("/announcement/detail/1541631");
+            then.status(200).body(body);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let d = client.get_announcement(1541631).unwrap();
+        m.assert();
+        assert_eq!(d.id, 1541631);
+        assert_eq!(d.title, "Walk-About Garage Sale - Labor Day Weekend!");
+    }
+
+    #[test]
+    fn get_announcement_404_is_a_not_found_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/announcement/detail/999");
+            then.status(404);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(
+            client.get_announcement(999),
+            Err(ClientError::NotFound)
         ));
     }
 }

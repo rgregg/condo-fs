@@ -1,6 +1,6 @@
 use crate::error::ParseError;
 use chrono::NaiveDateTime;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 
 /// One row of the announcements list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +91,121 @@ pub fn parse_announcement_list(html: &str) -> Result<Vec<AnnouncementSummary>, P
     }
     out.sort_by_key(|a| std::cmp::Reverse(a.posted_at));
     Ok(out)
+}
+
+/// One file attached to an announcement. Listed only — the content is not fetched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: String,
+    pub uploaded: Option<NaiveDateTime>,
+}
+
+/// A single announcement with its full text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnouncementDetail {
+    pub id: u64,
+    pub title: String,
+    pub posted_at: Option<NaiveDateTime>,
+    pub expires_at: Option<NaiveDateTime>,
+    pub posted_by: Option<String>,
+    pub body_markdown: String,
+    pub attachments: Vec<Attachment>,
+}
+
+/// Read the value that follows a `label.control-label` whose text is `label_text`.
+///
+/// Matched by label text and then by that specific label's own following siblings, not by
+/// pairing the Nth matching label with the Nth `p.form-control-static` in the whole
+/// document: the detail page reorders and omits fields depending on how the announcement
+/// was created, and a document-wide index would silently misalign the moment any field
+/// carrying its own `p.form-control-static` (in the body, in an attachments row, etc.)
+/// broke the assumed one-to-one correspondence. Walking forward from the matched label
+/// itself keeps each value scoped to its own label regardless of what else is on the page.
+fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
+    let label_sel = Selector::parse("label.control-label").unwrap();
+    let value_sel = Selector::parse("p.form-control-static").unwrap();
+
+    let label = doc
+        .select(&label_sel)
+        .find(|l| l.text().collect::<String>().trim() == label_text)?;
+
+    let mut sibling = label.next_sibling();
+    while let Some(node) = sibling {
+        if let Some(el) = ElementRef::wrap(node) {
+            if let Some(value) = el.select(&value_sel).next() {
+                return Some(value.text().collect::<String>().trim().to_string());
+            }
+        }
+        sibling = node.next_sibling();
+    }
+    None
+}
+
+/// Find the `table.table-striped` that actually lists attachments, identified by a header
+/// containing "File Name" rather than by being first or only such table on the page: the
+/// full page can carry other `table.table-striped` widgets, and picking the wrong one
+/// would surface garbage rows as attachments instead of an empty (or correct) list.
+fn find_attachments_table(doc: &Html) -> Option<ElementRef<'_>> {
+    let table_sel = Selector::parse("table.table-striped").unwrap();
+    let th_sel = Selector::parse("th").unwrap();
+    doc.select(&table_sel).find(|table| {
+        table
+            .select(&th_sel)
+            .any(|th| th.text().collect::<String>().contains("File Name"))
+    })
+}
+
+/// Parse an announcement detail page.
+///
+/// `id` is passed in rather than scraped: the caller already knows it, and the page does not
+/// display it. Every metadata field is matched by its own label's DOM neighbourhood (see
+/// `labelled_value`); only the body is required — a page without `div.ck-content` is a
+/// structure error, since an agent must never be told an announcement has no text because
+/// the markup moved.
+pub fn parse_announcement_detail(id: u64, html: &str) -> Result<AnnouncementDetail, ParseError> {
+    let doc = Html::parse_fragment(html);
+
+    let body_sel = Selector::parse("div.ck-content").unwrap();
+    let body_el = doc
+        .select(&body_sel)
+        .next()
+        .ok_or(ParseError::MissingElement("div.ck-content"))?;
+    let body_markdown = htmd::convert(&body_el.html()).unwrap_or_default();
+
+    let cell_sel = Selector::parse("td").unwrap();
+    let attachments = find_attachments_table(&doc)
+        .map(|table| {
+            let row_sel = Selector::parse("tbody tr").unwrap();
+            table
+                .select(&row_sel)
+                .filter_map(|row| {
+                    let cells: Vec<String> = row
+                        .select(&cell_sel)
+                        .map(|c| c.text().collect::<String>().trim().to_string())
+                        .collect();
+                    // Columns are Options | File Name | Date Uploaded.
+                    let name = cells.get(1)?.clone();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(Attachment {
+                        name,
+                        uploaded: cells.get(2).and_then(|s| parse_us_datetime(s)),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(AnnouncementDetail {
+        id,
+        title: labelled_value(&doc, "Title:").unwrap_or_default(),
+        posted_at: labelled_value(&doc, "Posted:").and_then(|s| parse_us_datetime(&s)),
+        expires_at: labelled_value(&doc, "Expires:").and_then(|s| parse_us_datetime(&s)),
+        posted_by: labelled_value(&doc, "Posted By:"),
+        body_markdown,
+        attachments,
+    })
 }
 
 #[cfg(test)]
@@ -250,5 +365,120 @@ mod tests {
             "must find the real table, not bind the decoy"
         );
         assert_eq!(items[0].id, 42);
+    }
+
+    fn detail_fixture() -> String {
+        std::fs::read_to_string("tests/fixtures/announcement_detail.html").unwrap()
+    }
+
+    #[test]
+    fn parses_the_captured_detail_page() {
+        let d = parse_announcement_detail(1541631, &detail_fixture()).unwrap();
+        assert_eq!(d.id, 1541631);
+        assert_eq!(d.title, "Walk-About Garage Sale - Labor Day Weekend!");
+        assert_eq!(d.posted_by.as_deref(), Some("HPMA PRC"));
+        assert_eq!(
+            d.posted_at.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 8, 13)
+                .unwrap()
+                .and_hms_opt(16, 14, 37)
+                .unwrap()
+        );
+        assert_eq!(
+            d.expires_at.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 1)
+                .unwrap()
+                .and_hms_opt(23, 59, 59)
+                .unwrap()
+        );
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(d.attachments[0].name, "Garage Sale.pdf");
+        assert_eq!(
+            d.attachments[0].uploaded.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 8, 13)
+                .unwrap()
+                .and_hms_opt(16, 14, 38)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn the_body_is_markdown_with_no_html_tags_left() {
+        let d = parse_announcement_detail(1541631, &detail_fixture()).unwrap();
+        assert!(
+            !d.body_markdown.contains("<div") && !d.body_markdown.contains("<figure"),
+            "an agent must never receive raw markup: {}",
+            d.body_markdown
+        );
+    }
+
+    #[test]
+    fn labels_are_matched_by_text_not_by_position() {
+        // Same four labels, reordered and with an extra field inserted. A parser keyed on
+        // sibling index would silently mis-assign these.
+        let html = r#"<div>
+            <label class="control-label">Posted By:</label>
+            <div><p class="form-control-static">Someone Else</p></div>
+            <label class="control-label">Unrelated:</label>
+            <div><p class="form-control-static">ignore me</p></div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Reordered</p></div>
+            <div class="ck-content"><p>Body text</p></div>
+        </div>"#;
+        let d = parse_announcement_detail(7, html).unwrap();
+        assert_eq!(d.title, "Reordered");
+        assert_eq!(d.posted_by.as_deref(), Some("Someone Else"));
+        assert_eq!(d.body_markdown.trim(), "Body text");
+    }
+
+    #[test]
+    fn a_detail_page_without_a_body_is_an_error() {
+        let html = r#"<div><label class="control-label">Title:</label>
+            <div><p class="form-control-static">No body</p></div></div>"#;
+        assert!(matches!(
+            parse_announcement_detail(1, html),
+            Err(ParseError::MissingElement("div.ck-content"))
+        ));
+    }
+
+    #[test]
+    fn a_detail_page_with_no_attachments_table_yields_an_empty_vec() {
+        let html = r#"<div><label class="control-label">Title:</label>
+            <div><p class="form-control-static">No attachments</p></div>
+            <div class="ck-content"><p>Body</p></div></div>"#;
+        let d = parse_announcement_detail(1, html).unwrap();
+        assert!(d.attachments.is_empty());
+    }
+
+    #[test]
+    fn a_decoy_table_striped_does_not_leak_garbage_attachment_rows() {
+        // Mirrors the list-page lesson: a full page can carry more than one
+        // table.table-striped (shell widgets, other content blocks). Blindly matching
+        // "table.table-striped tbody tr" across the whole document would pick up rows
+        // from a decoy table that carry no file at all.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Has decoy</p></div>
+            <div class="ck-content"><p>Body</p></div>
+            <table class="table table-striped">
+                <thead><tr><th>Unrelated</th><th>Widget</th></tr></thead>
+                <tbody><tr><td>not</td><td>an attachment</td></tr></tbody>
+            </table>
+            <table class="table table-striped">
+                <thead><tr><th>Options</th><th>File Name</th><th>Date Uploaded</th></tr></thead>
+                <tbody><tr>
+                    <td><a href="/download">Download</a></td>
+                    <td>Real File.pdf</td>
+                    <td>1/2/2026 9:05:00 AM</td>
+                </tr></tbody>
+            </table>
+        </div>"#;
+        let d = parse_announcement_detail(1, html).unwrap();
+        assert_eq!(
+            d.attachments.len(),
+            1,
+            "must not leak the decoy table's row"
+        );
+        assert_eq!(d.attachments[0].name, "Real File.pdf");
     }
 }

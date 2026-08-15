@@ -333,7 +333,7 @@ fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use condo_api::{AnnouncementSummary, Event, FileMeta};
+    use condo_api::{AnnouncementDetail, AnnouncementSummary, Event, FileMeta};
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -370,6 +370,9 @@ mod tests {
         }
         fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
             unimplemented!("the FUSE layer never lists announcements")
+        }
+        fn get_announcement(&self, _id: u64) -> Result<AnnouncementDetail, ClientError> {
+            unimplemented!("the FUSE layer never reads a single announcement")
         }
     }
 

@@ -8,6 +8,6 @@ pub use client::{CondoClient, HttpCondoClient, RawResponse};
 pub use credentials::{Credentials, CredentialsError};
 pub use error::{ClientError, ParseError};
 pub use model::{
-    parse_announcement_list, parse_event_list, parse_file_list, AnnouncementSummary, Entry, Event,
-    FileMeta,
+    parse_announcement_detail, parse_announcement_list, parse_event_list, parse_file_list,
+    AnnouncementDetail, AnnouncementSummary, Attachment, Entry, Event, FileMeta,
 };
