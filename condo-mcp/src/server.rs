@@ -106,6 +106,12 @@ impl CondoMcp {
                 format!("Condo Control is unreachable ({inner}). This may be worth retrying.")
             }
             ClientError::Io(ref inner) => format!("Local I/O error: {inner}"),
+            ClientError::PageStructure(ref inner) => {
+                log::debug!("page structure: {inner}");
+                "Condo Control's page layout has changed and this tool can no longer read it. \
+                 This needs a code fix, not a retry."
+                    .to_string()
+            }
         };
         ErrorData::internal_error(msg, None)
     }
@@ -113,7 +119,7 @@ impl CondoMcp {
     /// Merge the per-domain routers. Each domain owns its own file and its own router;
     /// this is the one place they come together, and the only line a new domain touches.
     fn build_router() -> ToolRouter<Self> {
-        Self::library_router() + Self::calendar_router()
+        Self::library_router() + Self::calendar_router() + Self::announcements_router()
     }
 }
 

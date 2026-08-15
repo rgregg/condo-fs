@@ -333,7 +333,7 @@ fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use condo_api::{Event, FileMeta};
+    use condo_api::{AnnouncementSummary, Event, FileMeta};
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -367,6 +367,9 @@ mod tests {
         }
         fn list_events(&self, _start: i64, _end: i64) -> Result<Vec<Event>, ClientError> {
             unimplemented!("the FUSE layer never lists calendar events")
+        }
+        fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
+            unimplemented!("the FUSE layer never lists announcements")
         }
     }
 

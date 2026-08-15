@@ -1,5 +1,15 @@
 use thiserror::Error;
 
+/// A page's markup did not contain what the parser needed.
+///
+/// Distinct from `ClientError::Parse`, which covers malformed JSON: this means the HTML
+/// arrived intact but its structure moved, so the fix is a new selector, not a retry.
+#[derive(Debug, Error)]
+pub enum ParseError {
+    #[error("expected element not found: {0}")]
+    MissingElement(&'static str),
+}
+
 #[derive(Debug, Error)]
 pub enum ClientError {
     #[error("http error: {0}")]
@@ -12,4 +22,6 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("not found")]
     NotFound,
+    #[error("page structure error: {0}")]
+    PageStructure(#[from] ParseError),
 }
