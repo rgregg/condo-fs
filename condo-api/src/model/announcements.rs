@@ -112,27 +112,25 @@ pub struct AnnouncementDetail {
     pub attachments: Vec<Attachment>,
 }
 
-/// Read the value that follows a `label.control-label` whose text is `label_text`.
+/// Search `from`'s own following siblings for a value, stopping as soon as another
+/// `label.control-label` is reached (whether the sibling itself is one, or contains one).
 ///
-/// Matched by label text and then by that specific label's own following siblings, not by
-/// pairing the Nth matching label with the Nth `p.form-control-static` in the whole
-/// document: the detail page reorders and omits fields depending on how the announcement
-/// was created, and a document-wide index would silently misalign the moment any field
-/// carrying its own `p.form-control-static` (in the body, in an attachments row, etc.)
-/// broke the assumed one-to-one correspondence. Walking forward from the matched label
-/// itself keeps each value scoped to its own label regardless of what else is on the page.
-fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
-    let label_sel = Selector::parse("label.control-label").unwrap();
-    let value_sel = Selector::parse("p.form-control-static").unwrap();
-
-    let label = doc
-        .select(&label_sel)
-        .find(|l| l.text().collect::<String>().trim() == label_text)?;
-
-    let mut sibling = label.next_sibling();
+/// The "stop at the next label" rule is what keeps this scoped to a single field: without
+/// it, a label with no value of its own would silently return whatever value belongs to
+/// the *next* field instead of `None` — wrong data standing in for a missing one, which is
+/// exactly the class of bug this whole matching scheme exists to avoid.
+fn value_in_following_siblings(
+    from: ElementRef<'_>,
+    label_sel: &Selector,
+    value_sel: &Selector,
+) -> Option<String> {
+    let mut sibling = from.next_sibling();
     while let Some(node) = sibling {
         if let Some(el) = ElementRef::wrap(node) {
-            if let Some(value) = el.select(&value_sel).next() {
+            if label_sel.matches(&el) || el.select(label_sel).next().is_some() {
+                return None; // ran into the next field before finding this one's value
+            }
+            if let Some(value) = el.select(value_sel).next() {
                 return Some(value.text().collect::<String>().trim().to_string());
             }
         }
@@ -141,17 +139,58 @@ fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
     None
 }
 
+/// Read the value that follows a `label.control-label` whose text is `label_text`.
+///
+/// Matched by label text and then by that specific label's own local DOM neighbourhood,
+/// not by pairing the Nth matching label with the Nth `p.form-control-static` in the whole
+/// document: the detail page reorders and omits fields depending on how the announcement
+/// was created, and a document-wide index would silently misalign the moment any field
+/// carrying its own `p.form-control-static` (in the body, in an attachments row, etc.)
+/// broke the assumed one-to-one correspondence.
+///
+/// Two things are tried, in order:
+/// 1. The label's own following siblings (the common case: label and value share a
+///    wrapper, e.g. `<div><label>Title:</label><div><p class="form-control-static">…`).
+/// 2. If the label itself has no qualifying sibling — Bootstrap sometimes wraps the label
+///    in its own column `<div>`, e.g. `<div class="col-md-4"><label>Title:</label></div>`
+///    — the same search from the label's *enclosing block's* following siblings.
+fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
+    let label_sel = Selector::parse("label.control-label").unwrap();
+    let value_sel = Selector::parse("p.form-control-static").unwrap();
+
+    let label = doc
+        .select(&label_sel)
+        .find(|l| l.text().collect::<String>().trim() == label_text)?;
+
+    if let Some(v) = value_in_following_siblings(label, &label_sel, &value_sel) {
+        return Some(v);
+    }
+
+    let enclosing_block = ElementRef::wrap(label.parent()?)?;
+    value_in_following_siblings(enclosing_block, &label_sel, &value_sel)
+}
+
 /// Find the `table.table-striped` that actually lists attachments, identified by a header
 /// containing "File Name" rather than by being first or only such table on the page: the
 /// full page can carry other `table.table-striped` widgets, and picking the wrong one
 /// would surface garbage rows as attachments instead of an empty (or correct) list.
-fn find_attachments_table(doc: &Html) -> Option<ElementRef<'_>> {
+///
+/// Returns the table along with the column indices for the name and upload-date cells,
+/// read from that same header row rather than assumed as fixed positions: if Condo
+/// Control ever drops or reorders a column (e.g. removing "Options"), a hardcoded index
+/// would silently read the wrong text into `name` instead of failing loudly or matching
+/// correctly.
+fn find_attachments_table(doc: &Html) -> Option<(ElementRef<'_>, usize, Option<usize>)> {
     let table_sel = Selector::parse("table.table-striped").unwrap();
     let th_sel = Selector::parse("th").unwrap();
-    doc.select(&table_sel).find(|table| {
-        table
+    doc.select(&table_sel).find_map(|table| {
+        let headers: Vec<String> = table
             .select(&th_sel)
-            .any(|th| th.text().collect::<String>().contains("File Name"))
+            .map(|th| th.text().collect::<String>().trim().to_string())
+            .collect();
+        let name_idx = headers.iter().position(|h| h.contains("File Name"))?;
+        let uploaded_idx = headers.iter().position(|h| h.contains("Date Uploaded"));
+        Some((table, name_idx, uploaded_idx))
     })
 }
 
@@ -159,22 +198,27 @@ fn find_attachments_table(doc: &Html) -> Option<ElementRef<'_>> {
 ///
 /// `id` is passed in rather than scraped: the caller already knows it, and the page does not
 /// display it. Every metadata field is matched by its own label's DOM neighbourhood (see
-/// `labelled_value`); only the body is required — a page without `div.ck-content` is a
-/// structure error, since an agent must never be told an announcement has no text because
-/// the markup moved.
+/// `labelled_value`). The title and the body are both required: a page without a `Title:`
+/// label, or without `div.ck-content`, is a structure error rather than an announcement
+/// with an empty title or empty text — an agent must never be told an announcement has no
+/// title or no text because the markup moved.
 pub fn parse_announcement_detail(id: u64, html: &str) -> Result<AnnouncementDetail, ParseError> {
     let doc = Html::parse_fragment(html);
+
+    let title = labelled_value(&doc, "Title:")
+        .ok_or(ParseError::MissingElement("label.control-label:Title:"))?;
 
     let body_sel = Selector::parse("div.ck-content").unwrap();
     let body_el = doc
         .select(&body_sel)
         .next()
         .ok_or(ParseError::MissingElement("div.ck-content"))?;
-    let body_markdown = htmd::convert(&body_el.html()).unwrap_or_default();
+    let body_markdown = htmd::convert(&body_el.html())
+        .map_err(|_| ParseError::UnconvertibleMarkup("div.ck-content"))?;
 
     let cell_sel = Selector::parse("td").unwrap();
     let attachments = find_attachments_table(&doc)
-        .map(|table| {
+        .map(|(table, name_idx, uploaded_idx)| {
             let row_sel = Selector::parse("tbody tr").unwrap();
             table
                 .select(&row_sel)
@@ -183,14 +227,15 @@ pub fn parse_announcement_detail(id: u64, html: &str) -> Result<AnnouncementDeta
                         .select(&cell_sel)
                         .map(|c| c.text().collect::<String>().trim().to_string())
                         .collect();
-                    // Columns are Options | File Name | Date Uploaded.
-                    let name = cells.get(1)?.clone();
+                    let name = cells.get(name_idx)?.clone();
                     if name.is_empty() {
                         return None;
                     }
                     Some(Attachment {
                         name,
-                        uploaded: cells.get(2).and_then(|s| parse_us_datetime(s)),
+                        uploaded: uploaded_idx
+                            .and_then(|i| cells.get(i))
+                            .and_then(|s| parse_us_datetime(s)),
                     })
                 })
                 .collect()
@@ -199,7 +244,7 @@ pub fn parse_announcement_detail(id: u64, html: &str) -> Result<AnnouncementDeta
 
     Ok(AnnouncementDetail {
         id,
-        title: labelled_value(&doc, "Title:").unwrap_or_default(),
+        title,
         posted_at: labelled_value(&doc, "Posted:").and_then(|s| parse_us_datetime(&s)),
         expires_at: labelled_value(&doc, "Expires:").and_then(|s| parse_us_datetime(&s)),
         posted_by: labelled_value(&doc, "Posted By:"),
@@ -409,6 +454,119 @@ mod tests {
             !d.body_markdown.contains("<div") && !d.body_markdown.contains("<figure"),
             "an agent must never receive raw markup: {}",
             d.body_markdown
+        );
+        // `the_body_is_markdown_with_no_html_tags_left` and
+        // `!body_md.contains("<div")` alone are satisfied by an empty string — pin the
+        // real content too, so a conversion that silently produces nothing cannot pass.
+        assert!(
+            !d.body_markdown.trim().is_empty(),
+            "the captured fixture's body is a real image link, not empty text"
+        );
+        assert!(
+            d.body_markdown.contains("access-file.aspx"),
+            "expected the captured image URL to survive conversion, got: {}",
+            d.body_markdown
+        );
+    }
+
+    #[test]
+    fn a_label_with_no_value_of_its_own_does_not_steal_the_next_fields_value() {
+        // No wrapper separates these two labels, so a sibling walk that doesn't stop at
+        // the next label would keep going past "Title:" and wrongly return
+        // "Posted By:"'s value instead of None. Tested directly against `labelled_value`
+        // (a private fn, reachable from this child module) so the assertion is about the
+        // matching logic itself, not laundered through the higher-level parse result.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <label class="control-label">Posted By:</label>
+            <div><p class="form-control-static">HPMA PRC</p></div>
+        </div>"#;
+        let doc = Html::parse_fragment(html);
+        assert_eq!(
+            labelled_value(&doc, "Title:"),
+            None,
+            "a label with no value of its own must not report the next field's value"
+        );
+        assert_eq!(
+            labelled_value(&doc, "Posted By:").as_deref(),
+            Some("HPMA PRC")
+        );
+    }
+
+    #[test]
+    fn a_stray_value_before_the_labels_is_not_picked_up() {
+        // An index-paired implementation (label N <-> value N in document order) would
+        // hand this stray paragraph to the first label it sees, since it's the first
+        // `p.form-control-static` in the document. Matching from the label's own
+        // neighbourhood must skip it.
+        let html = r#"<div>
+            <p class="form-control-static">Stray value with no label of its own</p>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Real Title</p></div>
+        </div>"#;
+        let doc = Html::parse_fragment(html);
+        assert_eq!(
+            labelled_value(&doc, "Title:").as_deref(),
+            Some("Real Title")
+        );
+    }
+
+    #[test]
+    fn a_label_wrapped_in_its_own_column_div_still_finds_its_value() {
+        // Bootstrap sometimes wraps the label itself in a column div, leaving it with no
+        // sibling of its own inside that div. The value must still be found by falling
+        // back to the label's enclosing block's following siblings.
+        let html = r#"<div>
+            <div class="col-md-4"><label class="control-label">Title:</label></div>
+            <div class="col-md-8"><p class="form-control-static">Wrapped Title</p></div>
+        </div>"#;
+        let doc = Html::parse_fragment(html);
+        assert_eq!(
+            labelled_value(&doc, "Title:").as_deref(),
+            Some("Wrapped Title")
+        );
+    }
+
+    #[test]
+    fn a_detail_page_without_a_title_is_an_error() {
+        // The plan treats a missing body as a structure error rather than an empty
+        // string; a missing title gets the same treatment, for the same reason — an
+        // agent must never be told an announcement has an empty title because the
+        // markup moved.
+        let html = r#"<div><div class="ck-content"><p>Body with no title label</p></div></div>"#;
+        assert!(matches!(
+            parse_announcement_detail(1, html),
+            Err(ParseError::MissingElement(_))
+        ));
+    }
+
+    #[test]
+    fn attachment_columns_are_found_by_header_text_not_fixed_position() {
+        // Same discipline as the table-selection tests: if the "Options" column were
+        // ever dropped, cells.get(1)/get(2) would silently read the date into `name`
+        // and the filename into `uploaded`. Reordering the columns here must not
+        // confuse name and date.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Reordered columns</p></div>
+            <div class="ck-content"><p>Body</p></div>
+            <table class="table table-striped">
+                <thead><tr><th>Date Uploaded</th><th>File Name</th></tr></thead>
+                <tbody><tr>
+                    <td>1/2/2026 9:05:00 AM</td>
+                    <td>Reordered.pdf</td>
+                </tr></tbody>
+            </table>
+        </div>"#;
+        let d = parse_announcement_detail(1, html).unwrap();
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(d.attachments[0].name, "Reordered.pdf");
+        assert_eq!(
+            d.attachments[0].uploaded.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
+                .unwrap()
+                .and_hms_opt(9, 5, 0)
+                .unwrap()
         );
     }
 

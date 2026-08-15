@@ -112,9 +112,13 @@ impl CondoMcp {
         name = "get_announcement",
         description = "Get one condo association announcement in full, by the id returned \
                        from list_announcements. Returns the title, who posted it, when it was \
-                       posted and expires, and the full text converted to Markdown. \
-                       Attachments are listed by name only — their contents cannot be \
-                       downloaded, so do not report them as unreadable files."
+                       posted and expires, the full text converted to Markdown, and a list \
+                       of attachments (name and upload date; contents cannot be downloaded, \
+                       so do not report them as unreadable files). Some announcements are \
+                       posted as a single image with no other text — for those, the body \
+                       will be only a Markdown image link, which is the complete announcement, \
+                       not a broken or truncated one; its contents cannot be fetched, so do \
+                       not report it as unreadable or try to download the URL."
     )]
     pub async fn get_announcement(
         &self,

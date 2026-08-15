@@ -8,6 +8,12 @@ use thiserror::Error;
 pub enum ParseError {
     #[error("expected element not found: {0}")]
     MissingElement(&'static str),
+    /// The element was found, but converting its HTML to Markdown failed. Kept distinct
+    /// from `MissingElement` so the two failure modes stay visible in logs and error
+    /// messages: this one means the DOM shape was fine but the conversion step itself
+    /// broke, not that a selector stopped matching.
+    #[error("could not convert element to markdown: {0}")]
+    UnconvertibleMarkup(&'static str),
 }
 
 #[derive(Debug, Error)]
