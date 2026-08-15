@@ -235,6 +235,9 @@ Currently available tools:
   and Condo Control does not expose booking details to a resident account, so there is no
   `get_event`.
 
+  This covers **amenity bookings only**. Condo Control has a separate community events
+  calendar — board and committee meetings, classes — which is not exposed yet.
+
 Build it the same way as `condo-fs`:
 
 ```bash
