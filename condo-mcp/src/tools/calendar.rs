@@ -78,7 +78,11 @@ impl CondoMcp {
                        as shelters, docks, and the clubhouse. Dates are YYYY-MM-DD and default \
                        to today through 60 days out. Results are sorted by start time. Titles \
                        name the facility booked, not the resident who booked it, and booking \
-                       details are not available."
+                       details are not available. IMPORTANT: this covers amenity bookings only. \
+                       Board meetings, committee meetings, classes, and other community events \
+                       live on a separate community events calendar that this server does not \
+                       yet expose — an empty or unrelated result here does not mean no such \
+                       event exists."
     )]
     pub async fn list_events(
         &self,

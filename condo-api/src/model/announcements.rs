@@ -112,6 +112,21 @@ pub struct AnnouncementDetail {
     pub attachments: Vec<Attachment>,
 }
 
+/// The outcome of scanning a node's following siblings for a field's value.
+///
+/// Kept as three states rather than collapsing to `Option<String>` because
+/// `labelled_value`'s stage-2 fallback must react differently to each of the two
+/// "not found" cases: hitting the next label means this field genuinely has no value
+/// here, so the fallback must stop; running out of siblings means the search simply
+/// hasn't reached the value yet, so the fallback may keep looking further out. A plain
+/// `None` cannot distinguish those, which is exactly how the fallback used to walk past
+/// a label with no value of its own and return the *next* field's value instead.
+enum SiblingScan {
+    Found(String),
+    HitNextLabel,
+    Exhausted,
+}
+
 /// Search `from`'s own following siblings for a value, stopping as soon as another
 /// `label.control-label` is reached (whether the sibling itself is one, or contains one).
 ///
@@ -123,20 +138,20 @@ fn value_in_following_siblings(
     from: ElementRef<'_>,
     label_sel: &Selector,
     value_sel: &Selector,
-) -> Option<String> {
+) -> SiblingScan {
     let mut sibling = from.next_sibling();
     while let Some(node) = sibling {
         if let Some(el) = ElementRef::wrap(node) {
             if label_sel.matches(&el) || el.select(label_sel).next().is_some() {
-                return None; // ran into the next field before finding this one's value
+                return SiblingScan::HitNextLabel; // ran into the next field first
             }
             if let Some(value) = el.select(value_sel).next() {
-                return Some(value.text().collect::<String>().trim().to_string());
+                return SiblingScan::Found(value.text().collect::<String>().trim().to_string());
             }
         }
         sibling = node.next_sibling();
     }
-    None
+    SiblingScan::Exhausted
 }
 
 /// Read the value that follows a `label.control-label` whose text is `label_text`.
@@ -154,6 +169,15 @@ fn value_in_following_siblings(
 /// 2. If the label itself has no qualifying sibling — Bootstrap sometimes wraps the label
 ///    in its own column `<div>`, e.g. `<div class="col-md-4"><label>Title:</label></div>`
 ///    — the same search from the label's *enclosing block's* following siblings.
+///
+/// Stage 2 only runs when stage 1 is `Exhausted` (ran out of siblings without finding
+/// either a value or the next label). If stage 1 instead hits the next label, that means
+/// this label has no value of its own *and* it's not merely wrapped alone — falling
+/// through to the enclosing block in that case would walk out to the next field's value
+/// and return it here, exactly the bug this whole scheme exists to avoid.
+///
+/// A value element that resolves to only whitespace is treated the same as no value
+/// element at all: `None` means "not stated", and `Some("")` is never a valid answer.
 fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
     let label_sel = Selector::parse("label.control-label").unwrap();
     let value_sel = Selector::parse("p.form-control-static").unwrap();
@@ -162,12 +186,30 @@ fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
         .select(&label_sel)
         .find(|l| l.text().collect::<String>().trim() == label_text)?;
 
-    if let Some(v) = value_in_following_siblings(label, &label_sel, &value_sel) {
-        return Some(v);
-    }
+    let scan = match value_in_following_siblings(label, &label_sel, &value_sel) {
+        SiblingScan::Found(v) => SiblingScan::Found(v),
+        SiblingScan::HitNextLabel => SiblingScan::HitNextLabel,
+        SiblingScan::Exhausted => {
+            let enclosing_block = ElementRef::wrap(label.parent()?)?;
+            value_in_following_siblings(enclosing_block, &label_sel, &value_sel)
+        }
+    };
 
-    let enclosing_block = ElementRef::wrap(label.parent()?)?;
-    value_in_following_siblings(enclosing_block, &label_sel, &value_sel)
+    match scan {
+        SiblingScan::Found(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+/// Normalize header text for comparison: lowercase and collapse internal whitespace to
+/// single spaces, so a re-cased or internally-respaced header (e.g. "File name",
+/// "File   Name") is still recognized instead of silently failing closed to an empty
+/// attachments list.
+fn normalize_header(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Find the `table.table-striped` that actually lists attachments, identified by a header
@@ -182,14 +224,24 @@ fn labelled_value(doc: &Html, label_text: &str) -> Option<String> {
 /// correctly.
 fn find_attachments_table(doc: &Html) -> Option<(ElementRef<'_>, usize, Option<usize>)> {
     let table_sel = Selector::parse("table.table-striped").unwrap();
+    let row_sel = Selector::parse("tr").unwrap();
     let th_sel = Selector::parse("th").unwrap();
     doc.select(&table_sel).find_map(|table| {
-        let headers: Vec<String> = table
+        // Scoped to the one row whose own `th`s actually label the data columns (found
+        // by content, same discipline as everywhere else in this module) — not every
+        // `th` in the table. A second thead row above it (a colspan'd grouping header)
+        // or a `th` stranded in tbody would otherwise add extra entries and shift the
+        // derived column indices off the row's actual `td` columns.
+        let header_row = table.select(&row_sel).find(|r| {
+            r.select(&th_sel)
+                .any(|th| normalize_header(&th.text().collect::<String>()).contains("file name"))
+        })?;
+        let headers: Vec<String> = header_row
             .select(&th_sel)
-            .map(|th| th.text().collect::<String>().trim().to_string())
+            .map(|th| normalize_header(&th.text().collect::<String>()))
             .collect();
-        let name_idx = headers.iter().position(|h| h.contains("File Name"))?;
-        let uploaded_idx = headers.iter().position(|h| h.contains("Date Uploaded"));
+        let name_idx = headers.iter().position(|h| h.contains("file name"))?;
+        let uploaded_idx = headers.iter().position(|h| h.contains("date uploaded"));
         Some((table, name_idx, uploaded_idx))
     })
 }
@@ -471,15 +523,21 @@ mod tests {
 
     #[test]
     fn a_label_with_no_value_of_its_own_does_not_steal_the_next_fields_value() {
-        // No wrapper separates these two labels, so a sibling walk that doesn't stop at
-        // the next label would keep going past "Title:" and wrongly return
-        // "Posted By:"'s value instead of None. Tested directly against `labelled_value`
-        // (a private fn, reachable from this child module) so the assertion is about the
-        // matching logic itself, not laundered through the higher-level parse result.
+        // Both labels share a sibling-bearing enclosing div, so stage 1 (the labels'
+        // own following siblings, which finds nothing for either label) correctly falls
+        // through to stage 2 (the enclosing block's following siblings) — but stage 2
+        // must stop there too. A stage-2 fallback that doesn't distinguish "hit the next
+        // label" from "ran out of siblings" would keep walking out to the *enclosing
+        // block's* following siblings and wrongly return "Posted By:"'s value for
+        // "Title:" instead of None. Tested directly against `labelled_value` (a private
+        // fn, reachable from this child module) so the assertion is about the matching
+        // logic itself, not laundered through the higher-level parse result.
         let html = r#"<div>
-            <label class="control-label">Title:</label>
-            <label class="control-label">Posted By:</label>
-            <div><p class="form-control-static">HPMA PRC</p></div>
+            <div class="col-lg-6">
+                <label class="control-label">Title:</label>
+                <label class="control-label">Posted By:</label>
+            </div>
+            <div class="col-lg-6"><p class="form-control-static">HPMA PRC</p></div>
         </div>"#;
         let doc = Html::parse_fragment(html);
         assert_eq!(
@@ -491,6 +549,37 @@ mod tests {
             labelled_value(&doc, "Posted By:").as_deref(),
             Some("HPMA PRC")
         );
+    }
+
+    #[test]
+    fn a_blank_value_element_is_none_not_an_empty_string() {
+        // `Some("")` is a wrong API shape regardless of the stage-1/stage-2 fallback
+        // question: None means "not stated", Some("") means nothing and must never be
+        // handed to a caller. A value element that exists but is only whitespace must
+        // read the same as no value element at all.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">   </p></div>
+        </div>"#;
+        let doc = Html::parse_fragment(html);
+        assert_eq!(
+            labelled_value(&doc, "Title:"),
+            None,
+            "a blank value element must read as None, not Some(\"\")"
+        );
+    }
+
+    #[test]
+    fn a_detail_page_with_a_blank_title_value_is_an_error() {
+        // The doc comment on parse_announcement_detail promises a page without a usable
+        // Title: is a structure error, not an announcement with an empty title.
+        let html = r#"<div><label class="control-label">Title:</label>
+            <div><p class="form-control-static">   </p></div>
+            <div class="ck-content"><p>Body</p></div></div>"#;
+        assert!(matches!(
+            parse_announcement_detail(1, html),
+            Err(ParseError::MissingElement(_))
+        ));
     }
 
     #[test]
@@ -606,6 +695,72 @@ mod tests {
             <div class="ck-content"><p>Body</p></div></div>"#;
         let d = parse_announcement_detail(1, html).unwrap();
         assert!(d.attachments.is_empty());
+    }
+
+    #[test]
+    fn attachment_headers_are_matched_regardless_of_case_and_whitespace() {
+        // A re-cased or internally-respaced header (e.g. "File name", "File   Name")
+        // must still be recognized: brittle exact-case, exact-spacing matching would
+        // silently fail closed to an empty attachments list instead of finding the
+        // real table.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Recased headers</p></div>
+            <div class="ck-content"><p>Body</p></div>
+            <table class="table table-striped">
+                <thead><tr><th>File   name</th><th>DATE UPLOADED</th></tr></thead>
+                <tbody><tr>
+                    <td>Recased.pdf</td>
+                    <td>1/2/2026 9:05:00 AM</td>
+                </tr></tbody>
+            </table>
+        </div>"#;
+        let d = parse_announcement_detail(1, html).unwrap();
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(d.attachments[0].name, "Recased.pdf");
+        assert_eq!(
+            d.attachments[0].uploaded.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
+                .unwrap()
+                .and_hms_opt(9, 5, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_grouping_header_row_does_not_shift_column_indices() {
+        // find_attachments_table must scope its header scan to the header row that
+        // actually labels the data columns. A two-row thead (a grouping row above the
+        // real column-header row) adds th's that don't correspond 1:1 with tbody's td
+        // columns; collecting th across the whole table would count that grouping th
+        // and derive name/uploaded indices one column too far right, reading the wrong
+        // cell into `name`.
+        let html = r#"<div>
+            <label class="control-label">Title:</label>
+            <div><p class="form-control-static">Grouped header</p></div>
+            <div class="ck-content"><p>Body</p></div>
+            <table class="table table-striped">
+                <thead>
+                    <tr><th colspan="3">Attachment</th></tr>
+                    <tr><th>Options</th><th>File Name</th><th>Date Uploaded</th></tr>
+                </thead>
+                <tbody><tr>
+                    <td><a href="/download">Download</a></td>
+                    <td>Real.pdf</td>
+                    <td>1/2/2026 9:05:00 AM</td>
+                </tr></tbody>
+            </table>
+        </div>"#;
+        let d = parse_announcement_detail(1, html).unwrap();
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(d.attachments[0].name, "Real.pdf");
+        assert_eq!(
+            d.attachments[0].uploaded.unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
+                .unwrap()
+                .and_hms_opt(9, 5, 0)
+                .unwrap()
+        );
     }
 
     #[test]
