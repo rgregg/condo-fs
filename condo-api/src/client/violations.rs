@@ -271,16 +271,16 @@ mod tests {
         let body = std::fs::read_to_string("tests/fixtures/violation_detail.html").unwrap();
         let m = server.mock(|when, then| {
             when.method(GET)
-                .path("/violationTracking/view-violation-details/885")
+                .path("/violationTracking/view-violation-details/4242")
                 .query_param("status", "-1");
             then.status(200)
                 .header("content-type", "text/html; charset=utf-8")
                 .body(body);
         });
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
-        let d = client.get_violation(885).unwrap();
+        let d = client.get_violation(4242).unwrap();
         m.assert();
-        assert_eq!(d.subject, "RV Storage No Current Sticker");
+        assert_eq!(d.subject, "Unscreened Boat Trailer Example");
         assert_eq!(d.updates.len(), 3);
     }
 
@@ -304,12 +304,12 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path("/violationTracking/view-violation-details/885");
+                .path("/violationTracking/view-violation-details/4242");
             then.status(302).header("location", "/login?NextPage=x");
         });
         login_mocks(&server);
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
-        assert!(matches!(client.get_violation(885), Err(ClientError::Auth)));
+        assert!(matches!(client.get_violation(4242), Err(ClientError::Auth)));
     }
 
     #[test]
@@ -317,13 +317,13 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path("/violationTracking/view-violation-details/885");
+                .path("/violationTracking/view-violation-details/4242");
             then.status(200)
                 .body("<html><body>Invalid address</body></html>");
         });
         let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
         assert!(matches!(
-            client.get_violation(885),
+            client.get_violation(4242),
             Err(ClientError::PageStructure(_))
         ));
     }

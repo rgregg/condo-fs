@@ -57,10 +57,10 @@ fn value_in_following_siblings(
 /// announcements, a `span.textLeft` on violations).
 ///
 /// Matched by label text and then by that specific label's own local DOM neighbourhood,
-/// not by pairing the Nth matching label with the Nth the value element in the whole
+/// not by pairing the Nth matching label with the Nth value element in the whole
 /// document: the detail page reorders and omits fields depending on how the announcement
 /// was created, and a document-wide index would silently misalign the moment any field
-/// carrying its own the value element (in the body, in an attachments row, etc.)
+/// carrying its own value element (in the body, in an attachments row, etc.)
 /// broke the assumed one-to-one correspondence.
 ///
 /// Two things are tried, in order:

@@ -234,8 +234,10 @@ fn parse_access_file_url(url: &str) -> Option<(u64, String)> {
     let (mut id, mut key) = (None, None);
     for pair in query.split('&') {
         match pair.split_once('=') {
-            Some(("FileRecordID", v)) => id = v.trim().parse::<u64>().ok(),
-            Some(("Key", v)) => key = Some(v.trim().to_string()),
+            Some((k, v)) if k.eq_ignore_ascii_case("FileRecordID") => {
+                id = v.trim().parse::<u64>().ok()
+            }
+            Some((k, v)) if k.eq_ignore_ascii_case("Key") => key = Some(v.trim().to_string()),
             _ => {}
         }
     }
@@ -286,7 +288,37 @@ fn parse_violation_update(
             markdown = markdown.replace(&k, "REDACTED");
         }
     }
-    Ok((markdown.trim().to_string(), attachments))
+    Ok((scrub_keys(&markdown).trim().to_string(), attachments))
+}
+
+/// Replace `text[start..end]`-style runs, matching `needle` ASCII case-insensitively and
+/// ending each run where `stop` first returns true (or at the end of the text).
+fn scrub_runs(text: &str, needle: &str, keep: &str, stop: impl Fn(char) -> bool) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    while let Some(found) = lower[pos..].find(&needle) {
+        let start = pos + found + needle.len();
+        out.push_str(&text[pos..start]);
+        out.push_str(keep);
+        let run_end = text[start..].find(&stop).map_or(text.len(), |i| start + i);
+        pos = run_end;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+/// Unconditional last line of defence: whatever the markup looked like and whether or not
+/// the URL parsed as an attachment, no `access-file.aspx?...` query and no `Key=<token>`
+/// may survive in the Markdown.
+fn scrub_keys(markdown: &str) -> String {
+    let no_urls = scrub_runs(markdown, "access-file.aspx?", "REDACTED", |c| {
+        c.is_whitespace() || matches!(c, ')' | '>' | '"' | '\'' | ']' | '<')
+    });
+    scrub_runs(&no_urls, "key=", "REDACTED", |c| {
+        !(c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// Parse a violation detail page.
@@ -296,8 +328,8 @@ fn parse_violation_update(
 /// ordinals. A page with no `Subject:` label or no `#updateRows` container (including the
 /// "Invalid address" shell, which arrives as HTTP 200) is a structure error, but a present
 /// container with no update tables is a legitimately empty timeline.
-pub fn parse_violation_detail(id: u64, html: &str) -> Result<ViolationDetail, ParseError> {
-    let doc = Html::parse_fragment(html);
+pub fn parse_violation_detail(id: u64, page: &str) -> Result<ViolationDetail, ParseError> {
+    let doc = Html::parse_fragment(page);
     let value = |label: &str| html::labelled_value(&doc, label, "span.textLeft");
     let date = |label: &str| value(label).and_then(|s| parse_us_datetime(&s));
 
@@ -323,12 +355,12 @@ pub fn parse_violation_detail(id: u64, html: &str) -> Result<ViolationDetail, Pa
         {
             continue;
         }
-        let Some(body) = table
+        // A top-level table without a body cell means the markup moved (e.g. the class was
+        // renamed). Skipping it would report "no updates", which is a different statement.
+        let body = table
             .select(&td_sel)
             .find(|td| td.value().classes().any(|c| c == "divUpdateText"))
-        else {
-            continue;
-        };
+            .ok_or(ParseError::MissingElement("td.divUpdateText"))?;
         let meta = table
             .select(&td_sel)
             .find(|td| !td.value().classes().any(|c| c == "divUpdateText"));
@@ -494,9 +526,9 @@ mod tests {
 
     #[test]
     fn metadata_is_read_by_label_text() {
-        let d = parse_violation_detail(885, &fixture("violation_detail.html")).unwrap();
-        assert_eq!(d.id, 885);
-        assert_eq!(d.subject, "RV Storage No Current Sticker");
+        let d = parse_violation_detail(4242, &fixture("violation_detail.html")).unwrap();
+        assert_eq!(d.id, 4242);
+        assert_eq!(d.subject, "Unscreened Boat Trailer Example");
         assert_eq!(d.unit.as_deref(), Some("101"));
         assert_eq!(d.recipients.as_deref(), Some("Owner, Fake Mr. (101)"));
         assert_eq!(
@@ -508,20 +540,20 @@ mod tests {
             d.stage.as_deref(),
             Some("Proposed Fine/Option for Appeal Hearing")
         );
-        assert_eq!(d.violation_date, Some(dt(2026, 7, 15, 16, 29, 45)));
-        assert_eq!(d.due_date, Some(dt(2026, 8, 16, 10, 37, 0)));
+        assert_eq!(d.violation_date, Some(dt(2026, 3, 2, 9, 15, 30)));
+        assert_eq!(d.due_date, Some(dt(2026, 4, 3, 10, 0, 0)));
     }
 
     #[test]
     fn updates_are_oldest_first_with_ordinals() {
-        let d = parse_violation_detail(885, &fixture("violation_detail.html")).unwrap();
+        let d = parse_violation_detail(4242, &fixture("violation_detail.html")).unwrap();
         assert_eq!(d.updates.len(), 3);
         assert_eq!(
             d.updates.iter().map(|u| u.ordinal).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        assert_eq!(d.updates[0].posted_at, Some(dt(2026, 7, 16, 13, 10, 0)));
-        assert_eq!(d.updates[2].posted_at, Some(dt(2026, 8, 18, 10, 52, 0)));
+        assert_eq!(d.updates[0].posted_at, Some(dt(2026, 3, 4, 8, 5, 0)));
+        assert_eq!(d.updates[2].posted_at, Some(dt(2026, 3, 20, 11, 20, 0)));
         assert!(d
             .updates
             .windows(2)
@@ -532,7 +564,7 @@ mod tests {
 
     #[test]
     fn update_body_is_markdown_and_keeps_inline_image_attachment() {
-        let d = parse_violation_detail(885, &fixture("violation_detail.html")).unwrap();
+        let d = parse_violation_detail(4242, &fixture("violation_detail.html")).unwrap();
         let first = &d.updates[0];
         assert_eq!(first.attachments.len(), 1);
         assert_eq!(first.attachments[0].id, 1234567);
@@ -550,7 +582,7 @@ mod tests {
     fn zero_updates_is_an_empty_timeline() {
         let d = parse_violation_detail(1, &fixture("violation_detail_empty.html")).unwrap();
         assert!(d.updates.is_empty());
-        assert_eq!(d.subject, "RV Storage No Current Sticker");
+        assert_eq!(d.subject, "Unscreened Boat Trailer Example");
         assert_eq!(d.unit.as_deref(), Some("101"));
     }
 
@@ -584,8 +616,8 @@ mod tests {
             reordered,
             &html[start + block.len()..]
         );
-        let a = parse_violation_detail(885, &fixture("violation_detail.html")).unwrap();
-        let b = parse_violation_detail(885, &html).unwrap();
+        let a = parse_violation_detail(4242, &fixture("violation_detail.html")).unwrap();
+        let b = parse_violation_detail(4242, &html).unwrap();
         assert_eq!(a.subject, b.subject);
         assert_eq!(a.unit, b.unit);
         assert_eq!(a.recipients, b.recipients);
@@ -599,7 +631,7 @@ mod tests {
 
     #[test]
     fn debug_output_never_contains_the_key() {
-        let d = parse_violation_detail(885, &fixture("violation_detail.html")).unwrap();
+        let d = parse_violation_detail(4242, &fixture("violation_detail.html")).unwrap();
         let out = format!("{d:?}");
         assert!(!out.contains(FAKE_KEY));
         assert!(out.contains("<redacted>"));
@@ -621,6 +653,52 @@ mod tests {
                     .collect();
                 assert_eq!(value, FAKE_KEY, "{name} carries a non-fake Key");
             }
+        }
+    }
+
+    #[test]
+    fn renamed_update_body_class_is_a_structure_error() {
+        let html = fixture("violation_detail.html").replace("divUpdateText", "divRenamed");
+        assert!(matches!(
+            parse_violation_detail(4242, &html),
+            Err(ParseError::MissingElement("td.divUpdateText"))
+        ));
+    }
+
+    fn with_body(body: &str) -> String {
+        let html = fixture("violation_detail_empty.html");
+        let table = format!(
+            r#"<table><tr><td><i class="fas fa-user"></i><span><span>A</span></span> 03/04/2026 08:05 AM</td><td class="divUpdateText">{body}</td></tr></table>"#
+        );
+        html.replace(
+            r#"<div id="updateRows">"#,
+            &format!(r#"<div id="updateRows">{table}"#),
+        )
+    }
+
+    #[test]
+    fn malformed_attachment_urls_never_leak_the_key() {
+        let secret = "ABCDEF12-3456-7890-ABCD-EF1234567890";
+        let bodies = [
+            format!(r#"<p><img src="https://x/access-file.aspx?Key={secret}&mode=preview"></p>"#),
+            format!(
+                r#"<p><img src="https://x/access-file.aspx?filerecordid=77&key={secret}"></p>"#
+            ),
+            format!(
+                r#"<p><img src="https://x/access-file.aspx?FileRecordID=abc&Key={secret}"></p>"#
+            ),
+            format!(
+                r#"<video><source src="https://x/access-file.aspx?FileRecordID=5&Key={secret}"></video><p>t</p>"#
+            ),
+            format!(r#"<p><a href="https://x/y?Key={secret}">link</a></p>"#),
+        ];
+        for body in bodies {
+            let d = parse_violation_detail(4242, &with_body(&body)).unwrap();
+            let md = &d.updates[0].body_markdown;
+            assert!(!md.to_lowercase().contains(&secret.to_lowercase()), "{md}");
+            assert!(!format!("{d:?}")
+                .to_lowercase()
+                .contains(&secret.to_lowercase()));
         }
     }
 }
