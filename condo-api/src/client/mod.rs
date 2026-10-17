@@ -1,13 +1,18 @@
 pub mod announcements;
 pub mod calendar;
 pub mod library;
+pub mod violations;
 
 use crate::credentials::Credentials;
 use crate::error::ClientError;
-use crate::model::{AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta};
+use crate::model::{
+    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, ViolationFilterOptions,
+    ViolationPage, ViolationQuery,
+};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
+use std::sync::Mutex;
 
 pub trait LoginApi {
     fn login(&self) -> Result<(), ClientError>;
@@ -38,15 +43,27 @@ pub trait AnnouncementsApi {
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError>;
 }
 
-/// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
-pub trait CondoClient: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi {}
+pub trait ViolationsApi {
+    /// The workspace id and the violation type/stage dropdown options. Fetched once from
+    /// the list page and cached for the life of the client.
+    fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError>;
+    /// One page of the violations list.
+    fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError>;
+}
 
-impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi> CondoClient for T {}
+/// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
+pub trait CondoClient:
+    LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi
+{
+}
+
+impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi> CondoClient for T {}
 
 pub struct HttpCondoClient {
     pub(crate) http: Client,
     pub(crate) base_url: String,
     pub(crate) creds: Credentials,
+    pub(crate) violation_filters: Mutex<Option<ViolationFilterOptions>>,
 }
 
 /// A verbatim capture of one GET response, for endpoint discovery.
@@ -72,6 +89,7 @@ impl HttpCondoClient {
             http,
             base_url: base_url.into(),
             creds,
+            violation_filters: Mutex::new(None),
         })
     }
 
@@ -210,6 +228,16 @@ impl AnnouncementsApi for HttpCondoClient {
 
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError> {
         self.with_reauth(|| self.get_announcement_once(id))
+    }
+}
+
+impl ViolationsApi for HttpCondoClient {
+    fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError> {
+        self.violation_filters_cached()
+    }
+
+    fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError> {
+        self.with_reauth(|| self.list_violations_once(q))
     }
 }
 
