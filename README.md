@@ -235,6 +235,22 @@ Currently available tools:
   and Condo Control does not expose booking details to a resident account, so there is no
   `get_event`.
 
+  This covers **amenity bookings only**. Condo Control has a separate community events
+  calendar — board and committee meetings, classes — which is not exposed yet.
+- **`list_announcements`** — list the association's currently-posted announcements, newest
+  first. Takes no parameters. Returns each announcement's id, title, posting time, and
+  expiry if it has one.
+
+  This is the **default, current view only**: currently-posted, non-expired
+  announcements (14 at last check). Condo Control's archive of older or expired
+  announcements is reachable only through a POST filter form, which this read-only server
+  will not submit, so an announcement's absence from this list does not mean it never
+  existed.
+- **`get_announcement`** — get one announcement in full, by the `id` returned from
+  `list_announcements`. Returns the title, who posted it, when it was posted and expires,
+  and the full text converted from the site's HTML to Markdown. Attachments are listed by
+  name and upload date only — their contents cannot be downloaded.
+
 Build it the same way as `condo-fs`:
 
 ```bash

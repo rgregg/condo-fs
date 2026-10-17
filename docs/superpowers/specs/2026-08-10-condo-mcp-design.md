@@ -130,20 +130,49 @@ workflows into the protocol.
 
 ### Announcements
 
-**`list_announcements`** — `{ limit?: int = 25, since?: date, until?: date }`
-Returns `[{ id, title, posted_at, author, summary }]`, newest first. `summary` is the first
-~200 characters of the body as plain text.
+Discovery (2026-08-14) established that announcements are **server-rendered HTML**, not JSON —
+the first domain requiring real HTML parsing. The list lives at `GET /announcement/show-list`
+and each item at `GET /announcement/detail/{id}`.
+
+**`list_announcements`** — no parameters
+Returns `[{ id, title, posted_at, expires_at }]`, newest first.
+
+The list page renders a `table.table-striped` whose rows carry an
+`a.announcementTitle[href="/announcement/detail/{id}"]`, a posted timestamp, and an optional
+`Expires:` line. Dates are US-format local strings (`8/13/2026 4:14:37 PM`).
+
+**The date-range filter is a POST form, so this tool cannot reach the archive.** A GET-only
+client sees exactly the default view: currently-posted, non-expired announcements, on a single
+page with every pager control disabled (14 items at the time of discovery). This is a hard
+limit of the read-only design, not an omission — the tool description must say so, so an agent
+does not conclude that an announcement it cannot find never existed.
 
 **`get_announcement`** — `{ id: int }`
-Returns `{ id, title, posted_at, author, body, attachments: [{ id, name }] }`. `body` is the
-announcement HTML converted to Markdown. Attachments are **listed only** — fetching their
-content is a files-phase concern, and the tool description says so explicitly so an agent
-does not report an attachment as unreadable.
+Returns `{ id, title, posted_at, expires_at, posted_by, body, attachments: [{ name, uploaded }] }`.
+
+The detail page carries a labeled metadata block (`Title:`, `Expires:`, `Posted:`,
+`Posted By:`), each value in a following `p.form-control-static`. The body is CKEditor HTML
+inside `div.ck-content`, converted to Markdown. Attachments are **listed only** — fetching
+their content is a files-phase concern, and the tool description says so explicitly so an
+agent does not report an attachment as unreadable.
+
+Parsers must anchor on these class names rather than on document position or element order:
+the surrounding page is a full application shell that changes independently of the content.
 
 ### Calendar
 
-Discovery (2026-08-10) established that Condo Control has no general events calendar. The
-calendar is the **amenity booking calendar**: reservations of association facilities. The
+> **Correction (2026-08-14).** The paragraph below originally claimed Condo Control has no
+> general events calendar. That was wrong — it reflected having found only the amenity module.
+> There is a separate events module: `GET /event/get-events-dashboard/` returns the community
+> calendar (board meetings, committee meetings, classes) — 2,031 events spanning 2022–2030 at
+> the time of discovery, each with a detail link at `/event/event-details/{id}`. It ignores
+> date parameters and returns the entire set (~552 KB), so any date filtering must happen
+> client-side; `/event/json-source/` exists but rejected every parameter combination tried.
+> `list_events` as shipped covers **amenity bookings only**. Community events are a separate,
+> unbuilt tool — and the more valuable one for board work.
+
+Discovery (2026-08-10) established that the **amenity booking calendar** — reservations of
+association facilities — is fed as follows. The
 feed is `GET /amenity/json-source/?filter=&start=<unix>&end=<unix>` — FullCalendar's event
 source convention, taking **Unix-second** timestamps and returning a clean JSON array of
 `{ id, title, start, end, allDay, color, textColor, isEventOwner, isLinkedBooking, isHoliday }`.

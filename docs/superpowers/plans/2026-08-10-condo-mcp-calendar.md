@@ -639,6 +639,20 @@ and was cut from the design."
 
 ---
 
+## Correction (2026-08-14)
+
+This plan's premise — repeated in its commit message above — that "Condo Control has no
+general events calendar" is **wrong**. It reflected having found only the amenity module.
+There is a separate events module: `GET /event/get-events-dashboard/` returns the community
+calendar (board meetings, committee meetings, classes), 2,031 events spanning 2022–2030,
+each with a detail link at `/event/event-details/{id}`. It ignores date parameters and
+returns the whole set (~552 KB), so filtering must be client-side.
+
+Everything this plan built is still correct — `list_events` genuinely covers amenity
+bookings, and `get_event` genuinely is not implementable for them. What is wrong is the
+claim that amenity bookings are the *only* calendar. Community events remain unbuilt and are
+the more useful source for board work.
+
 ## Follow-up carried out of this plan
 
 **Long bookings starting well before the requested range may be missed.** The overlap filter

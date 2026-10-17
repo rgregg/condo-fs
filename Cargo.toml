@@ -21,3 +21,5 @@ dirs = "5"
 httpmock = "0.7"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
+scraper = "0.20"
+htmd = "0.5"

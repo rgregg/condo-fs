@@ -1,9 +1,10 @@
+pub mod announcements;
 pub mod calendar;
 pub mod library;
 
 use crate::credentials::Credentials;
 use crate::error::ClientError;
-use crate::model::{Entry, Event, FileMeta};
+use crate::model::{AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
@@ -22,6 +23,10 @@ pub trait CondoClient {
     /// longer note on `HttpCondoClient::list_events_once` and how `condo_mcp`'s
     /// `list_events` tool compensates for it.
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError>;
+    /// List currently-posted announcements. The archive is not reachable read-only.
+    fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError>;
+    /// Fetch one announcement's full text and attachment list by id.
+    fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError>;
 }
 
 pub struct HttpCondoClient {
@@ -177,6 +182,14 @@ impl CondoClient for HttpCondoClient {
 
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError> {
         self.with_reauth(|| self.list_events_once(start, end))
+    }
+
+    fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
+        self.with_reauth(|| self.list_announcements_once())
+    }
+
+    fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError> {
+        self.with_reauth(|| self.get_announcement_once(id))
     }
 }
 

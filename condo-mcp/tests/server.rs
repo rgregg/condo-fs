@@ -466,3 +466,133 @@ async fn an_unparseable_date_is_a_tool_error_not_a_panic() {
     assert!(!tools.is_empty());
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn list_announcements_returns_the_current_notices() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let body =
+        std::fs::read_to_string("../condo-api/tests/fixtures/announcements_list.html").unwrap();
+    server.mock(|when, then| {
+        when.method(GET).path("/announcement/show-list");
+        then.status(200).body(body);
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(CallToolRequestParams::new("list_announcements"))
+        .await
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "tool errored: {result:?}");
+    let json = serde_json::to_value(&result.structured_content).unwrap();
+    let items = json
+        .as_array()
+        .expect("structured content should be an array");
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["id"], 1541631);
+    assert_eq!(
+        items[0]["title"],
+        "Walk-About Garage Sale - Labor Day Weekend!"
+    );
+    assert_eq!(items[0]["posted_at"], "2026-08-13T16:14:37");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_moved_announcements_page_is_an_error_not_an_empty_list() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/announcement/show-list");
+        then.status(200)
+            .body("<html><body>nothing here</body></html>");
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(CallToolRequestParams::new("list_announcements"))
+        .await;
+
+    assert!(
+        result.is_err() || result.unwrap().is_error == Some(true),
+        "a moved page must not read as 'no announcements'"
+    );
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(!tools.is_empty());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn get_announcement_returns_the_full_text_as_markdown() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let body =
+        std::fs::read_to_string("../condo-api/tests/fixtures/announcement_detail.html").unwrap();
+    server.mock(|when, then| {
+        when.method(GET).path("/announcement/detail/1541631");
+        then.status(200).body(body);
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("get_announcement").with_arguments(
+                serde_json::json!({ "id": 1541631 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "tool errored: {result:?}");
+    let json = serde_json::to_value(&result.structured_content).unwrap();
+    assert_eq!(json["id"], 1541631);
+    assert_eq!(json["title"], "Walk-About Garage Sale - Labor Day Weekend!");
+    assert_eq!(json["posted_by"], "HPMA PRC");
+    assert_eq!(json["posted_at"], "2026-08-13T16:14:37");
+    assert_eq!(json["expires_at"], "2026-10-01T23:59:59");
+    let body_md = json["body"].as_str().expect("body should be a string");
+    assert!(
+        !body_md.contains("<div"),
+        "body must be markdown, got: {body_md}"
+    );
+    let attachments = json["attachments"]
+        .as_array()
+        .expect("attachments should be an array");
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["name"], "Garage Sale.pdf");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn get_announcement_for_an_unknown_id_is_not_found() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/announcement/detail/999");
+        then.status(404);
+    });
+    let client = connect(&server, 137473).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("get_announcement").with_arguments(
+                serde_json::json!({ "id": 999 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "an unknown id should surface as a not-found error, got {result:?}"
+    );
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(!tools.is_empty());
+    client.cancel().await.unwrap();
+}
