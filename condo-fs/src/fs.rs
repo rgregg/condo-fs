@@ -1,5 +1,5 @@
 use crate::vfs::{Attr, Vfs};
-use condo_api::CondoClient;
+use condo_api::LibraryApi;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
@@ -8,11 +8,11 @@ use std::time::Duration;
 
 const TTL: Duration = Duration::from_secs(1);
 
-pub struct CondoFs<C: CondoClient> {
+pub struct CondoFs<C: LibraryApi> {
     vfs: Vfs<C>,
 }
 
-impl<C: CondoClient> CondoFs<C> {
+impl<C: LibraryApi> CondoFs<C> {
     pub fn new(vfs: Vfs<C>) -> CondoFs<C> {
         CondoFs { vfs }
     }
@@ -43,7 +43,7 @@ fn to_file_attr(a: &Attr, uid: u32, gid: u32) -> FileAttr {
     }
 }
 
-impl<C: CondoClient> Filesystem for CondoFs<C> {
+impl<C: LibraryApi> Filesystem for CondoFs<C> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let name = match name.to_str() {
             Some(n) => n,

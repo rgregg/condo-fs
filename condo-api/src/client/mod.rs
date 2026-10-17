@@ -9,11 +9,17 @@ use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
 
-pub trait CondoClient {
+pub trait LoginApi {
     fn login(&self) -> Result<(), ClientError>;
+}
+
+pub trait LibraryApi {
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError>;
     fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError>;
     fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError>;
+}
+
+pub trait CalendarApi {
     /// List amenity bookings between two instants, given as Unix seconds.
     ///
     /// `start`/`end` carry no timezone, but the endpoint interprets them — and reports
@@ -23,11 +29,19 @@ pub trait CondoClient {
     /// longer note on `HttpCondoClient::list_events_once` and how `condo_mcp`'s
     /// `list_events` tool compensates for it.
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError>;
+}
+
+pub trait AnnouncementsApi {
     /// List currently-posted announcements. The archive is not reachable read-only.
     fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError>;
     /// Fetch one announcement's full text and attachment list by id.
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError>;
 }
+
+/// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
+pub trait CondoClient: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi {}
+
+impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi> CondoClient for T {}
 
 pub struct HttpCondoClient {
     pub(crate) http: Client,
@@ -129,7 +143,7 @@ impl HttpCondoClient {
     }
 }
 
-impl CondoClient for HttpCondoClient {
+impl LoginApi for HttpCondoClient {
     fn login(&self) -> Result<(), ClientError> {
         // 1. GET /login to obtain a session cookie.
         self.http.get(self.url("/login")).send()?;
@@ -159,7 +173,9 @@ impl CondoClient for HttpCondoClient {
         }
         Ok(())
     }
+}
 
+impl LibraryApi for HttpCondoClient {
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
         self.with_reauth(|| self.list_folder_once(folder_id))
     }
@@ -179,11 +195,15 @@ impl CondoClient for HttpCondoClient {
             other => other,
         }
     }
+}
 
+impl CalendarApi for HttpCondoClient {
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError> {
         self.with_reauth(|| self.list_events_once(start, end))
     }
+}
 
+impl AnnouncementsApi for HttpCondoClient {
     fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
         self.with_reauth(|| self.list_announcements_once())
     }

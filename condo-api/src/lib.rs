@@ -4,7 +4,9 @@ pub mod error;
 pub mod model;
 pub mod paths;
 
-pub use client::{CondoClient, HttpCondoClient, RawResponse};
+pub use client::{
+    AnnouncementsApi, CalendarApi, CondoClient, HttpCondoClient, LibraryApi, LoginApi, RawResponse,
+};
 pub use credentials::{Credentials, CredentialsError};
 pub use error::{ClientError, ParseError};
 pub use model::{

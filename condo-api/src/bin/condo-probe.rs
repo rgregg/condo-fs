@@ -8,7 +8,7 @@
 //!       --xhr /announcements/get-announcement-list /calendar/get-event-list
 use clap::Parser;
 use condo_api::paths::expand_tilde;
-use condo_api::{CondoClient, Credentials, HttpCondoClient};
+use condo_api::{Credentials, HttpCondoClient, LoginApi};
 use std::io::Write;
 use std::path::PathBuf;
 

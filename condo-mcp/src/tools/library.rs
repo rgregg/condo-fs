@@ -1,5 +1,5 @@
 use crate::server::CondoMcp;
-use condo_api::{CondoClient, Entry};
+use condo_api::{Entry, LibraryApi};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::ErrorData;
 use rmcp::tool;

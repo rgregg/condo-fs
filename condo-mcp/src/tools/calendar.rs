@@ -1,6 +1,6 @@
 use crate::server::CondoMcp;
 use chrono::{Duration, NaiveDate, Utc};
-use condo_api::{CondoClient, Event};
+use condo_api::{CalendarApi, Event};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::ErrorData;
 use rmcp::tool;

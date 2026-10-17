@@ -1,5 +1,5 @@
 use clap::Parser;
-use condo_api::{CondoClient, Credentials, HttpCondoClient};
+use condo_api::{Credentials, HttpCondoClient, LoginApi};
 use condo_fs::cache::ContentCache;
 use condo_fs::config::{Cli, Command, MountArgs};
 use condo_fs::fs::CondoFs;

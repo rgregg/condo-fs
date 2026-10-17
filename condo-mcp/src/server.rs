@@ -1,6 +1,6 @@
 use crate::Args;
 use condo_api::paths::expand_tilde;
-use condo_api::{ClientError, CondoClient, Credentials, HttpCondoClient};
+use condo_api::{ClientError, Credentials, HttpCondoClient, LoginApi};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::ErrorData;
 use std::sync::{Arc, Mutex};

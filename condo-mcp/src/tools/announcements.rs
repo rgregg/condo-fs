@@ -1,5 +1,5 @@
 use crate::server::CondoMcp;
-use condo_api::{AnnouncementDetail, AnnouncementSummary, Attachment, CondoClient};
+use condo_api::{AnnouncementDetail, AnnouncementSummary, AnnouncementsApi, Attachment};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::ErrorData;
 use rmcp::tool;
