@@ -1,0 +1,31 @@
+[package]
+name = "condo-api"
+description = "Client for the Condo Control association web application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+clap = { workspace = true, optional = true }
+env_logger = { workspace = true, optional = true }
+
+[dev-dependencies]
+httpmock = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+probe = ["dep:clap", "dep:env_logger"]
+
+[[bin]]
+name = "condo-probe"
+path = "src/bin/condo-probe.rs"
+required-features = ["probe"]

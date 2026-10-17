@@ -1,5 +1,5 @@
-use crate::client::CondoClient;
 use crate::vfs::{Attr, Vfs};
+use condo_api::CondoClient;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };

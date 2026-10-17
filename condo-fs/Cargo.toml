@@ -1,0 +1,28 @@
+[package]
+name = "condo-fs"
+description = "Mount a Condo Control File Library as a read-only FUSE filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "condo_fs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "condo-fs"
+path = "src/bin/condo-fs.rs"
+
+[dependencies]
+condo-api = { path = "../condo-api" }
+fuser = { version = "0.15", default-features = false }
+libc = "0.2"
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

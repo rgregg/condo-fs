@@ -4,8 +4,9 @@ Mount a [Condo Control](https://app.condocontrol.com) association **File Library
 read-only [FUSE](https://www.kernel.org/doc/html/latest/filesystems/fuse.html) filesystem,
 so you can browse and read library documents with ordinary file tools instead of the web UI.
 
-It is a reusable Rust library (a FUSE-agnostic Condo Control API client) plus a thin
-`condo-fs` mount binary.
+It is a Cargo workspace: a reusable, FUSE-agnostic Condo Control API client crate
+(`condo-api`) plus a thin `condo-fs` mount binary built on top of it. See
+[Workspace layout](#workspace-layout).
 
 ## Status
 
@@ -188,14 +189,24 @@ WSL2**, and the mount is then reachable from Windows Explorer. WSL1 will not wor
 - Files download whole on first read (the server does not support HTTP range requests) and are
   cached on disk keyed by file id + modified date, so an unchanged file is fetched only once.
 
+## Workspace layout
+
+This repo is a Cargo workspace with three crates:
+
+- **`condo-api`** — the Condo Control HTTP client: login/session handling, re-auth on
+  session expiry, and the response models (`Entry`, `FileMeta`) and errors (`ClientError`).
+  FUSE-agnostic and reusable by any consumer.
+- **`condo-fs`** — the FUSE filesystem and `condo-fs` mount binary, built on `condo-api`.
+- **`condo-mcp`** — a read-only MCP server exposing the same Condo Control File Library
+  over `condo-api`, for MCP clients such as Claude Code. See [condo-mcp](#condo-mcp) below.
+
 ## Using the client as a library
 
-The `condo_fs::client::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
+The `condo_api::CondoClient` trait (impl `HttpCondoClient`) is independent of FUSE
 and can be reused directly:
 
 ```rust
-use condo_fs::client::{CondoClient, HttpCondoClient};
-use condo_fs::credentials::Credentials;
+use condo_api::{CondoClient, Credentials, HttpCondoClient};
 
 let creds = Credentials::from_file("~/tokens/condo-control.txt".as_ref())?;
 let client = HttpCondoClient::new("https://app.condocontrol.com", creds)?;
@@ -203,11 +214,99 @@ client.login()?;
 let entries = client.list_folder(137473)?;
 ```
 
+## condo-mcp
+
+`condo-mcp` is a read-only [MCP](https://modelcontextprotocol.io) server that exposes a
+Condo Control association to MCP clients (Claude Code, Claude Desktop, etc.) as query
+tools. It speaks MCP over stdio and shares one authenticated `condo-api` session across
+every tool call. There is no write path: every tool is a query, and nothing it does can
+post, submit, or change anything in Condo Control.
+
+Currently available tools:
+
+- **`list_folder`** — list the folders and files directly inside one File Library folder.
+  Takes an optional `folder_id`; omit it to list the configured root folder. Returns each
+  entry's kind (`folder`/`file`), id, name, and modification date (files only). File
+  contents cannot be read yet.
+- **`list_events`** — list bookings on the association's amenity calendar (shelters,
+  docks, the clubhouse, etc.) between two dates, inclusive on both ends. Takes optional
+  `start`/`end` as `YYYY-MM-DD`, defaulting to today through 60 days out. Results are
+  sorted by start time. Titles name the facility booked, not the resident who booked it,
+  and Condo Control does not expose booking details to a resident account, so there is no
+  `get_event`.
+
+Build it the same way as `condo-fs`:
+
+```bash
+cargo build --release --bin condo-mcp
+```
+
+Register it with an MCP client by pointing at the built binary. For Claude Desktop or any
+client that reads an `mcpServers` config block:
+
+```json
+{
+  "mcpServers": {
+    "condo": {
+      "command": "/path/to/condo-fs/target/release/condo-mcp",
+      "args": ["--credentials", "/home/you/tokens/condo-control.txt"]
+    }
+  }
+}
+```
+
+Or, for Claude Code:
+
+```bash
+claude mcp add condo -- /path/to/condo-fs/target/release/condo-mcp
+```
+
+### condo-mcp options
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--credentials <path>` | `~/tokens/condo-control.txt` | Credentials file (same format as `condo-fs`; see [Credentials](#credentials)) |
+| `--base-url <url>` | `https://app.condocontrol.com` | Condo Control base URL |
+| `--root <id>` | `137473` | Root library folder ID (same meaning as `condo-fs`'s `--root`) |
+
+Login is lazy — the credentials file is only read and used on the first tool call, so a
+missing or bad credentials file surfaces as a normal tool error rather than a startup
+crash. All logging goes to stderr; stdout carries only the MCP protocol.
+
+## condo-probe
+
+`condo-probe` is a GET-only exploration tool for discovering Condo Control endpoints that
+`condo-api` doesn't map yet. You give it an explicit list of paths (nothing is crawled and
+no path is ever derived from a response body); it logs in with your real credentials,
+fetches each one, and dumps the raw response verbatim to `--out-dir` (default `probe-out`)
+for inspection.
+
+It is feature-gated because it is a discovery/debugging tool, not something built by
+default:
+
+```bash
+cargo run -p condo-api --features probe --bin condo-probe -- \
+    --xhr /announcements/get-announcement-list /calendar/get-event-list
+```
+
+By default it waits 1000ms between requests (`--delay-ms`); this hits a production system
+you don't own, so raise the delay rather than lower it, and never point it at a tight loop
+of paths without a delay.
+
+**Warnings:**
+
+- Output written to `--out-dir` contains **real resident data** pulled from a live
+  association. It must never be committed — `probe-out/` is gitignored at every depth, but
+  double-check `git status` before committing anything from a probing session regardless.
+- Dumps include response headers verbatim, which means **`set-cookie` headers — live
+  session tokens — are written to disk** in the output files, with your process's default
+  file permissions. Treat the output directory like you would the credentials file itself.
+
 ## Development
 
 ```bash
-cargo test          # unit tests (no network)
-CONDO_LIVE=1 cargo test --test live_smoke -- --nocapture   # opt-in live login/list test
+cargo test --all --all-features     # unit tests (no network), across the whole workspace, including condo-probe
+CONDO_LIVE=1 cargo test -p condo-api --test live_smoke -- --nocapture   # opt-in live login/list test
 ```
 
 Design and implementation notes live in `docs/superpowers/`.

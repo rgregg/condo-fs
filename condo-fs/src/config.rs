@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use condo_api::paths::expand_tilde;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -42,15 +43,6 @@ pub struct MountArgs {
     /// Stay in the foreground (do not daemonize); logs to stderr
     #[arg(long, default_value_t = true)]
     pub foreground: bool,
-}
-
-pub fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(p)
 }
 
 impl MountArgs {
