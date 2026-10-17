@@ -28,8 +28,9 @@ established: anchor parsers on class names and content, never on position, and m
 - **No writes of any kind.** No posting updates, changing stages, setting due dates, uploading
   files, or deleting drafts. The site exposes all of these; none are in scope. The server stays
   GET-only, like the rest of `condo-mcp`.
-- **Do not present inferred facts as recorded facts.** See "Milestones" below. A wrong "first
-  notice" date in a board briefing is worse than a missing one.
+- **Do not infer or label milestones** (first notice, warning, fine notice) from update order or
+  wording. See "Milestones" below. A wrong "first notice" date in a board briefing is worse than a
+  missing one.
 - No tool returns every update's full text for a violation in a single call; that is the
   token-heavy shape Ryan explicitly chose against.
 - No caching of attachment links (see Attachments).
@@ -104,16 +105,15 @@ download tool.
 Takes a violation id and an `attachment_id`; saves the file to the download folder and returns the
 saved path, size and content type. It never returns file contents inline. See Attachments.
 
-### Milestones
+### Milestones: none are inferred
 
-Condo Control records no stage-change history that we found, so "first notice", "warning", and
-"fine notice" cannot be read directly. `get_violation` may include a `milestones` section only if
-each entry is labelled **inferred** and names the update it was inferred from (for example, "first
-update by Compliance, 2026-07-16"). Inference is limited to what is unambiguous: the earliest update
-as the first notice, and the current stage as the current stage. It does **not** guess
-which update announced a fine from wording. If the stage is a fine-track stage, the summary says
-plainly that the fine-notice date is not recorded and points at the timeline. *(Builder's call; the
-discovery that stage changes are unrecorded is the reason.)*
+Condo Control records no stage-change history that we found, so "first notice", "warning" and
+"fine notice" dates cannot be read directly, and **the tools do not guess them**. Ryan's decision:
+the earliest update is not reliably the first notice to the owner. `get_violation` reports only
+recorded facts: the Violation Date field, the current stage, the due date, and the timeline of
+updates with their own timestamps. For a violation on a fine-track stage the summary states
+plainly that the dates of earlier notices and of any fine notice are not recorded as such, and
+points at the timeline. The agent reading the timeline, and Ryan, draw the conclusions.
 
 ## Attachments
 
@@ -204,8 +204,8 @@ neutralised. The existing gate applies: fmt, clippy `-D warnings`, tests, guardr
 - **Detail `?status=`.** Start by sending `-1` (All). The plan must verify with a read-only probe
   whether a wrong or missing value changes the response; if it does, `get_violation` falls back to
   the list row's status.
-- **Violation Date** is a recorded field and is shown as a recorded fact, separate from any
-  inferred milestone.
+- **Violation Date** is a recorded field and is shown as such. It is not described as the date of
+  first notice.
 - **Guardrails.** `scripts/guardrails.sh` only forbids non-GET calls and stdout writes, so a second,
   cookie-less client used for the storage GET needs no script change.
 
