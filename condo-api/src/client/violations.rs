@@ -1,8 +1,8 @@
 use crate::client::HttpCondoClient;
 use crate::error::ClientError;
 use crate::model::{
-    parse_violation_filters, parse_violation_page, ViolationFilterOptions, ViolationPage,
-    ViolationQuery,
+    parse_violation_detail, parse_violation_filters, parse_violation_page, ViolationDetail,
+    ViolationFilterOptions, ViolationPage, ViolationQuery,
 };
 
 impl HttpCondoClient {
@@ -67,6 +67,26 @@ impl HttpCondoClient {
         }
         let body = resp.error_for_status()?.text()?;
         parse_violation_page(&body)
+    }
+
+    /// One attempt at a single violation's detail page.
+    ///
+    /// `status=-1` ("all") matches what the site's own list links send. The page returns the
+    /// same updates without it, but we send it so the request mirrors the site.
+    pub(crate) fn get_violation_once(&self, id: u64) -> Result<ViolationDetail, ClientError> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/violationTracking/view-violation-details/{id}")))
+            .query(&[("status", "-1")])
+            .send()?;
+        if resp.status().is_redirection() {
+            return Err(ClientError::Auth);
+        }
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let html = resp.error_for_status()?.text()?;
+        Ok(parse_violation_detail(id, &html)?)
     }
 }
 
@@ -231,6 +251,80 @@ mod tests {
         assert!(matches!(
             client.list_violations(&query()),
             Err(ClientError::Auth)
+        ));
+    }
+
+    fn login_mocks(server: &MockServer) {
+        server.mock(|when, then| {
+            when.method(GET).path("/login");
+            then.status(200);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/login/login-post");
+            then.status(302).header("location", "/my/my-home");
+        });
+    }
+
+    #[test]
+    fn get_violation_fetches_by_id_with_status_all() {
+        let server = MockServer::start();
+        let body = std::fs::read_to_string("tests/fixtures/violation_detail.html").unwrap();
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/885")
+                .query_param("status", "-1");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf-8")
+                .body(body);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let d = client.get_violation(885).unwrap();
+        m.assert();
+        assert_eq!(d.subject, "RV Storage No Current Sticker");
+        assert_eq!(d.updates.len(), 3);
+    }
+
+    #[test]
+    fn get_violation_404_is_not_found() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/999");
+            then.status(404);
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(
+            client.get_violation(999),
+            Err(ClientError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn get_violation_302_to_login_is_an_auth_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/885");
+            then.status(302).header("location", "/login?NextPage=x");
+        });
+        login_mocks(&server);
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(client.get_violation(885), Err(ClientError::Auth)));
+    }
+
+    #[test]
+    fn get_violation_200_shell_is_a_structure_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/885");
+            then.status(200)
+                .body("<html><body>Invalid address</body></html>");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(
+            client.get_violation(885),
+            Err(ClientError::PageStructure(_))
         ));
     }
 }

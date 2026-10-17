@@ -6,8 +6,8 @@ pub mod violations;
 use crate::credentials::Credentials;
 use crate::error::ClientError;
 use crate::model::{
-    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, ViolationFilterOptions,
-    ViolationPage, ViolationQuery,
+    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, ViolationDetail,
+    ViolationFilterOptions, ViolationPage, ViolationQuery,
 };
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -49,6 +49,8 @@ pub trait ViolationsApi {
     fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError>;
     /// One page of the violations list.
     fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError>;
+    /// One violation's metadata and update timeline (oldest first) by id.
+    fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError>;
 }
 
 /// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
@@ -238,6 +240,10 @@ impl ViolationsApi for HttpCondoClient {
 
     fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError> {
         self.with_reauth(|| self.list_violations_once(q))
+    }
+
+    fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError> {
+        self.with_reauth(|| self.get_violation_once(id))
     }
 }
 
