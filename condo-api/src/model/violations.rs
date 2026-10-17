@@ -3,6 +3,7 @@ use crate::model::{announcements::parse_us_datetime, html};
 use chrono::{NaiveDate, NaiveDateTime};
 use scraper::{ElementRef, Html, Selector};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 /// The status filter of the violations list, with the ids the site's own dropdown uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +194,16 @@ impl std::fmt::Debug for ViolationAttachment {
             .field("key", &"<redacted>")
             .finish()
     }
+}
+
+/// Where a downloaded attachment was saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedAttachment {
+    /// Canonical path of the saved file, always inside the requested folder.
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// The storage response's media type (parameters dropped), if it sent one.
+    pub content_type: Option<String>,
 }
 
 /// One entry of a violation's update timeline.

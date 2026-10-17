@@ -11,7 +11,7 @@ pub use announcements::{
 pub use calendar::{parse_event_list, Event};
 pub use library::{parse_file_list, Entry, FileMeta};
 pub use violations::{
-    parse_violation_detail, parse_violation_filters, parse_violation_page, ViolationAttachment,
-    ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery, ViolationStatus,
-    ViolationSummary, ViolationUpdate,
+    parse_violation_detail, parse_violation_filters, parse_violation_page, SavedAttachment,
+    ViolationAttachment, ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
+    ViolationStatus, ViolationSummary, ViolationUpdate,
 };

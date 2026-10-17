@@ -1,9 +1,187 @@
 use crate::client::HttpCondoClient;
 use crate::error::ClientError;
 use crate::model::{
-    parse_violation_detail, parse_violation_filters, parse_violation_page, ViolationDetail,
-    ViolationFilterOptions, ViolationPage, ViolationQuery,
+    parse_violation_detail, parse_violation_filters, parse_violation_page, SavedAttachment,
+    ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
 };
+use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
+use reqwest::StatusCode;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The longest sanitised name kept, in bytes.
+const MAX_NAME_BYTES: usize = 150;
+
+/// Error text for a redirect we refuse to follow. Fixed, so it can never echo the URL.
+const UNEXPECTED_LOCATION: &str = "unexpected download location";
+const TOO_LARGE: &str = "file exceeds size limit";
+
+fn attachment_error(msg: &str) -> ClientError {
+    ClientError::Attachment(msg.to_string())
+}
+
+/// True only for `amazonaws.com` and its subdomains: the family the site's signed
+/// attachment redirects point at.
+pub(crate) fn is_storage_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "amazonaws.com" || h.ends_with(".amazonaws.com")
+}
+
+/// Make `name` safe as a single path component: no separators, no control characters, no
+/// `..`, no leading or trailing dots, bounded length, and never empty.
+pub(crate) fn sanitise_filename(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    while s.contains("..") {
+        s = s.replace("..", ".");
+    }
+    let trim = |c: char| c == '.' || c == '_' || c.is_whitespace();
+    let mut s = s.trim_matches(trim).to_string();
+    if s.len() > MAX_NAME_BYTES {
+        let mut cut = MAX_NAME_BYTES;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s = s.trim_end_matches(trim).to_string();
+    }
+    if s.is_empty() {
+        "attachment".to_string()
+    } else {
+        s
+    }
+}
+
+/// The media type without parameters, lower-cased.
+fn media_type(header: &str) -> Option<String> {
+    let essence = header.split(';').next()?.trim().to_ascii_lowercase();
+    (!essence.is_empty()).then_some(essence)
+}
+
+fn extension_for(media_type: &str) -> Option<&'static str> {
+    Some(match media_type {
+        "image/jpeg" | "image/jpg" | "image/pjpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" => "heic",
+        "image/tiff" => "tiff",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        _ => return None,
+    })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The filename a `Content-Disposition` header suggests; `filename*` (RFC 6266/5987) wins
+/// over `filename`.
+fn content_disposition_filename(header: &str) -> Option<String> {
+    let (mut plain, mut extended) = (None, None);
+    for part in header.split(';') {
+        let Some((k, v)) = part.trim().split_once('=') else {
+            continue;
+        };
+        let v = v.trim();
+        match k.trim().to_ascii_lowercase().as_str() {
+            "filename*" => {
+                // charset'language'percent-encoded
+                if let Some((_, encoded)) = v.split_once('\'').and_then(|(_, r)| r.split_once('\''))
+                {
+                    extended = Some(percent_decode(encoded.trim_matches('"')));
+                }
+            }
+            "filename" => plain = Some(v.trim_matches('"').to_string()),
+            _ => {}
+        }
+    }
+    extended.or(plain).filter(|n| !n.trim().is_empty())
+}
+
+/// Copy `r` into `w`, failing before any byte past `max` is written.
+fn copy_capped(r: &mut dyn Read, w: &mut dyn Write, max: u64) -> Result<u64, ClientError> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = match r.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            // A body read error can wrap a reqwest error that names the signed URL, so it is
+            // never surfaced; only its kind is logged.
+            Err(e) => {
+                log::warn!("attachment download interrupted ({:?})", e.kind());
+                return Err(attachment_error("download was interrupted"));
+            }
+        };
+        total += n as u64;
+        if total > max {
+            return Err(attachment_error(TOO_LARGE));
+        }
+        w.write_all(&buf[..n])?;
+    }
+}
+
+/// Stream `r` into `dir/file_name` through a hidden partial file that is renamed into place
+/// only once complete, and removed on any failure.
+fn stream_to_file(
+    r: &mut dyn Read,
+    dir: &Path,
+    file_name: &str,
+    max: u64,
+) -> Result<u64, ClientError> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let partial = dir.join(format!(
+        ".{file_name}.{}-{}.part",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        // `create_new` refuses to write through anything already at that path.
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
+        let n = copy_capped(r, &mut f, max)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&partial, dir.join(file_name))?;
+        Ok(n)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result
+}
 
 impl HttpCondoClient {
     /// The list page's workspace id and dropdown options, fetched once and then cached.
@@ -88,12 +266,130 @@ impl HttpCondoClient {
         let html = resp.error_for_status()?.text()?;
         Ok(parse_violation_detail(id, &html)?)
     }
+
+    /// One attempt at downloading an attachment. See `ViolationsApi::download_violation_attachment`.
+    ///
+    /// Nothing here may put the attachment `Key`, the `access-file.aspx` URL or the signed
+    /// storage URL into a log line or an error: reqwest errors from either request are
+    /// stripped of their URL or replaced by a fixed message.
+    pub(crate) fn download_violation_attachment_once(
+        &self,
+        violation_id: u64,
+        attachment_id: u64,
+        dest_dir: &Path,
+        max_bytes: u64,
+    ) -> Result<SavedAttachment, ClientError> {
+        // Stateless: the key is read fresh from the page every time, never cached.
+        let detail = self.get_violation_once(violation_id)?;
+        let attachment = detail
+            .updates
+            .iter()
+            .flat_map(|u| &u.attachments)
+            .find(|a| a.id == attachment_id)
+            .ok_or(ClientError::NotFound)?;
+
+        // Step 1: the authenticated request. This client never follows redirects.
+        log::info!("requesting attachment FileRecordID={attachment_id}");
+        let resp = self
+            .http
+            .get(self.url("/access-file.aspx"))
+            .query(&[
+                ("FileRecordID", attachment_id.to_string()),
+                ("Key", attachment.key.clone()),
+                ("mode", "preview".to_string()),
+            ])
+            .send()
+            .map_err(|e| ClientError::Http(e.without_url()))?;
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        if !status.is_redirection() {
+            log::warn!(
+                "attachment FileRecordID={attachment_id}: site answered HTTP {} without a redirect",
+                status.as_u16()
+            );
+            return Err(attachment_error("the site did not hand out the file"));
+        }
+        let target = resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|loc| resp.url().join(loc).ok())
+            .ok_or_else(|| attachment_error(UNEXPECTED_LOCATION))?;
+        if target.origin() == resp.url().origin()
+            && target.path().to_ascii_lowercase().starts_with("/login")
+        {
+            return Err(ClientError::Auth);
+        }
+        drop(resp);
+        let scheme_ok = target.scheme() == "https"
+            || (!self.storage_require_https && target.scheme() == "http");
+        let host_ok = target.host_str().is_some_and(|h| (self.storage_host_ok)(h));
+        if !scheme_ok || !host_ok || !target.username().is_empty() || target.password().is_some() {
+            log::warn!("attachment FileRecordID={attachment_id}: refused an unexpected redirect");
+            return Err(attachment_error(UNEXPECTED_LOCATION));
+        }
+
+        // Step 2: the signed URL, on the cookie-less storage client.
+        let mut resp = self.storage.get(target).send().map_err(|e| {
+            log::warn!(
+                "attachment FileRecordID={attachment_id}: storage request failed (connect: {}, timeout: {})",
+                e.is_connect(),
+                e.is_timeout()
+            );
+            attachment_error("could not reach the file storage")
+        })?;
+        if !resp.status().is_success() {
+            log::warn!(
+                "attachment FileRecordID={attachment_id}: storage answered HTTP {}",
+                resp.status().as_u16()
+            );
+            return Err(attachment_error("file storage refused the download"));
+        }
+        if resp.content_length().is_some_and(|n| n > max_bytes) {
+            return Err(attachment_error(TOO_LARGE));
+        }
+        let header = |name| resp.headers().get(name).and_then(|v| v.to_str().ok());
+        let content_type = header(CONTENT_TYPE).and_then(media_type);
+        let name = attachment
+            .name
+            .clone()
+            .or_else(|| header(CONTENT_DISPOSITION).and_then(content_disposition_filename))
+            .unwrap_or_else(|| match content_type.as_deref().and_then(extension_for) {
+                Some(ext) => format!("attachment.{ext}"),
+                None => "attachment".to_string(),
+            });
+        let file_name = format!(
+            "violation-{violation_id}-{attachment_id}-{}",
+            sanitise_filename(&name)
+        );
+
+        fs::create_dir_all(dest_dir)?;
+        let dir = dest_dir.canonicalize()?;
+        let bytes = stream_to_file(&mut resp, &dir, &file_name, max_bytes)?;
+        let path = dir.join(&file_name).canonicalize()?;
+        if path.parent() != Some(dir.as_path()) {
+            let _ = fs::remove_file(dir.join(&file_name));
+            return Err(attachment_error(
+                "refused to save outside the download folder",
+            ));
+        }
+        log::info!("saved attachment FileRecordID={attachment_id}: {bytes} bytes");
+        Ok(SavedAttachment {
+            path,
+            bytes,
+            content_type,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::client::tests::creds;
-    use crate::{ClientError, HttpCondoClient, ViolationQuery, ViolationStatus, ViolationsApi};
+    use crate::{
+        ClientError, HttpCondoClient, LoginApi, ViolationQuery, ViolationStatus, ViolationsApi,
+    };
     use httpmock::prelude::*;
 
     fn query() -> ViolationQuery {
@@ -326,5 +622,451 @@ mod tests {
             client.get_violation(4242),
             Err(ClientError::PageStructure(_))
         ));
+    }
+
+    // ---- attachment download ----
+
+    use super::{copy_capped, is_storage_host, sanitise_filename, stream_to_file};
+    use std::path::Path;
+
+    const KEY: &str = "00000000-0000-0000-0000-000000000000";
+    const SIGNED_PATH: &str = "/2026/07/15/1234567.jpeg";
+    const SIGNED_QUERY: &str =
+        "X-Amz-Expires=3600&X-Amz-Security-Token=SECRETTOKEN&X-Amz-Signature=SECRETSIG";
+
+    #[test]
+    fn sanitise_filename_strips_separators_and_traversal() {
+        for raw in ["../../etc/passwd", "/abs/x.pdf", "a\\b.jpg"] {
+            let s = sanitise_filename(raw);
+            assert!(!s.is_empty(), "{raw:?} -> empty");
+            assert!(!s.contains('/'), "{raw:?} -> {s:?}");
+            assert!(!s.contains('\\'), "{raw:?} -> {s:?}");
+            assert!(!s.contains(".."), "{raw:?} -> {s:?}");
+            assert!(!s.starts_with('.'), "{raw:?} -> {s:?}");
+        }
+    }
+
+    #[test]
+    fn sanitise_filename_never_returns_empty() {
+        for raw in ["", "...", "///"] {
+            assert_eq!(sanitise_filename(raw), "attachment", "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn sanitise_filename_keeps_a_normal_name() {
+        assert_eq!(sanitise_filename("Notice 1.pdf"), "Notice 1.pdf");
+    }
+
+    #[test]
+    fn sanitise_filename_drops_control_characters_and_caps_length() {
+        let s = sanitise_filename("a\u{0}b\nc.pdf");
+        assert!(!s.chars().any(char::is_control), "{s:?}");
+        assert!(sanitise_filename(&"x".repeat(1000)).len() <= 150);
+    }
+
+    #[test]
+    fn is_storage_host_accepts_s3_only() {
+        assert!(is_storage_host(
+            "ccc-filedata-prod.s3.ca-central-1.amazonaws.com"
+        ));
+        for h in ["evil.com", "amazonaws.com.evil.com", "notamazonaws.com", ""] {
+            assert!(!is_storage_host(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn copy_capped_stops_before_writing_past_the_limit() {
+        let mut out = Vec::new();
+        let err = copy_capped(&mut std::io::Cursor::new(vec![1u8, 2, 3]), &mut out, 2).unwrap_err();
+        assert!(matches!(err, ClientError::Attachment(ref m) if m == "file exceeds size limit"));
+        assert!(
+            out.len() <= 2,
+            "wrote {} bytes past a 2-byte cap",
+            out.len()
+        );
+        let mut out = Vec::new();
+        let n = copy_capped(&mut std::io::Cursor::new(vec![1u8, 2, 3]), &mut out, 3).unwrap();
+        assert_eq!((n, out), (3, vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn stream_to_file_removes_the_partial_file_when_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = stream_to_file(
+            &mut std::io::Cursor::new(vec![7u8; 10]),
+            dir.path(),
+            "violation-1-2-x.bin",
+            4,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Attachment(_)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    fn detail_mock(server: &MockServer, alt: Option<&str>) {
+        let mut body = std::fs::read_to_string("tests/fixtures/violation_detail.html").unwrap();
+        if let Some(alt) = alt {
+            body = body.replace(
+                "<img src=\"https://app.condocontrol.com/access-file",
+                &format!("<img alt=\"{alt}\" src=\"https://app.condocontrol.com/access-file"),
+            );
+        }
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/4242");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf-8")
+                .body(body);
+        });
+    }
+
+    fn access_mock<'a>(server: &'a MockServer, location: &str) -> httpmock::Mock<'a> {
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/access-file.aspx")
+                .query_param("FileRecordID", "1234567")
+                .query_param("Key", KEY)
+                .query_param("mode", "preview");
+            then.status(302).header("location", location);
+        })
+    }
+
+    fn signed_url(storage: &MockServer) -> String {
+        format!("{}?{SIGNED_QUERY}", storage.url(SIGNED_PATH))
+    }
+
+    fn local_client(server: &MockServer) -> HttpCondoClient {
+        HttpCondoClient::new(server.base_url(), creds())
+            .unwrap()
+            .with_storage_host_check(|h| h == "127.0.0.1")
+    }
+
+    fn violation_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.contains("violation-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn assert_no_secrets(err: &ClientError) {
+        for text in [err.to_string(), format!("{err:?}")] {
+            assert!(!text.contains(KEY), "key leaked: {text}");
+            assert!(!text.contains("X-Amz"), "signed query leaked: {text}");
+            assert!(!text.contains("SECRET"), "signed query leaked: {text}");
+            assert!(!text.contains(SIGNED_PATH), "signed path leaked: {text}");
+            assert!(!text.contains("access-file"), "site URL leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn downloads_through_the_redirect_and_saves_the_file() {
+        let server = MockServer::start();
+        let storage = MockServer::start();
+        detail_mock(&server, None);
+        let access = access_mock(&server, &signed_url(&storage));
+        let file = storage.mock(|when, then| {
+            when.method(GET)
+                .path(SIGNED_PATH)
+                .query_param("X-Amz-Signature", "SECRETSIG");
+            then.status(200)
+                .header("content-type", "image/jpeg")
+                .body([1u8, 2, 3]);
+        });
+        // Not created up front: the download must create it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("downloads");
+        let saved = local_client(&server)
+            .download_violation_attachment(4242, 1234567, &dest, 1024)
+            .unwrap();
+        access.assert();
+        file.assert();
+        assert_eq!(std::fs::read(&saved.path).unwrap(), vec![1, 2, 3]);
+        let name = saved
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("violation-4242-1234567-"), "{name}");
+        assert!(saved.path.starts_with(dest.canonicalize().unwrap()));
+        assert_eq!(saved.bytes, 3);
+        assert_eq!(saved.content_type.as_deref(), Some("image/jpeg"));
+        let dbg = format!("{saved:?}");
+        assert!(!dbg.contains("X-Amz") && !dbg.contains(KEY), "{dbg}");
+    }
+
+    #[test]
+    fn storage_request_carries_no_cookies_or_session_headers() {
+        let server = MockServer::start();
+        let storage = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/login");
+            then.status(200)
+                .header("set-cookie", "ASP.NET_SessionId=abc; path=/");
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/login/login-post");
+            then.status(302)
+                .header("location", "/my/my-home")
+                .header("set-cookie", "CCCookie=xyz; path=/");
+        });
+        detail_mock(&server, None);
+        // The main client really does hold a session: the access request carries it.
+        let access = server.mock(|when, then| {
+            when.method(GET)
+                .path("/access-file.aspx")
+                .header_exists("cookie");
+            then.status(302).header("location", signed_url(&storage));
+        });
+        let clean = storage.mock(|when, then| {
+            when.method(GET).path(SIGNED_PATH).matches(|req| {
+                !req.headers.as_ref().is_some_and(|h| {
+                    h.iter().any(|(k, _)| {
+                        k.eq_ignore_ascii_case("cookie")
+                            || k.eq_ignore_ascii_case("authorization")
+                            || k.eq_ignore_ascii_case("referer")
+                            || k.eq_ignore_ascii_case("x-requested-with")
+                    })
+                })
+            });
+            then.status(200)
+                .header("content-type", "image/jpeg")
+                .body([1u8, 2, 3]);
+        });
+        let client = local_client(&server);
+        client.login().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        client
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+            .unwrap();
+        access.assert();
+        clean.assert();
+    }
+
+    #[test]
+    fn redirect_to_an_unexpected_host_is_refused_and_nothing_is_fetched() {
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        access_mock(&server, &format!("https://evil.example/x?{SIGNED_QUERY}"));
+        // Default host check: nothing but an amazonaws.com host may be followed.
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = client
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+            .unwrap_err();
+        assert!(
+            matches!(err, ClientError::Attachment(ref m) if m == "unexpected download location"),
+            "{err:?}"
+        );
+        assert!(violation_files(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn plain_http_storage_url_is_refused_by_default() {
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        access_mock(
+            &server,
+            &format!("http://bucket.s3.amazonaws.com/x?{SIGNED_QUERY}"),
+        );
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = client
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+            .unwrap_err();
+        assert!(
+            matches!(err, ClientError::Attachment(ref m) if m == "unexpected download location"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn oversize_download_is_aborted_and_the_partial_file_removed() {
+        let server = MockServer::start();
+        let storage = MockServer::start();
+        detail_mock(&server, None);
+        access_mock(&server, &signed_url(&storage));
+        storage.mock(|when, then| {
+            when.method(GET).path(SIGNED_PATH);
+            then.status(200)
+                .header("content-type", "image/jpeg")
+                .body([1u8, 2, 3]);
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = local_client(&server)
+            .download_violation_attachment(4242, 1234567, tmp.path(), 2)
+            .unwrap_err();
+        assert!(
+            matches!(err, ClientError::Attachment(ref m) if m == "file exceeds size limit"),
+            "{err:?}"
+        );
+        assert!(violation_files(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn unknown_attachment_id_is_not_found() {
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        let access = server.mock(|when, then| {
+            when.method(GET).path("/access-file.aspx");
+            then.status(500);
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = local_client(&server)
+            .download_violation_attachment(4242, 999, tmp.path(), 1024)
+            .unwrap_err();
+        assert!(matches!(err, ClientError::NotFound), "{err:?}");
+        access.assert_hits(0);
+    }
+
+    #[test]
+    fn access_redirect_to_login_is_an_auth_error() {
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        access_mock(&server, "/login?NextPage=x");
+        login_mocks(&server);
+        let tmp = tempfile::tempdir().unwrap();
+        let err = local_client(&server)
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Auth), "{err:?}");
+    }
+
+    #[test]
+    fn errors_never_contain_the_key_or_signed_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut errors = Vec::new();
+
+        // Unexpected host.
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        access_mock(
+            &server,
+            &format!("https://evil.example{SIGNED_PATH}?{SIGNED_QUERY}"),
+        );
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        errors.push(
+            client
+                .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+                .unwrap_err(),
+        );
+
+        // Oversize, storage refusal, and an unreachable storage host: a fresh pair of
+        // servers per case.
+        let storage_case = |status: u16, body: &[u8], max: u64, dead: bool| {
+            let server = MockServer::start();
+            let storage = MockServer::start();
+            detail_mock(&server, None);
+            let location = if dead {
+                // Nothing listens on 127.0.0.1:9 (discard), so the storage GET fails to connect.
+                format!("http://127.0.0.1:9{SIGNED_PATH}?{SIGNED_QUERY}")
+            } else {
+                signed_url(&storage)
+            };
+            access_mock(&server, &location);
+            storage.mock(|when, then| {
+                when.method(GET).path(SIGNED_PATH);
+                then.status(status).body(body);
+            });
+            local_client(&server)
+                .download_violation_attachment(4242, 1234567, tmp.path(), max)
+                .unwrap_err()
+        };
+        errors.push(storage_case(200, &[1, 2, 3], 2, false));
+        errors.push(storage_case(
+            403,
+            b"<Error>AccessDenied X-Amz-Signature</Error>",
+            1024,
+            false,
+        ));
+        errors.push(storage_case(200, &[1], 1024, true));
+
+        // The site answers the access request without a redirect.
+        let server = MockServer::start();
+        detail_mock(&server, None);
+        server.mock(|when, then| {
+            when.method(GET).path("/access-file.aspx");
+            then.status(200).body("not a redirect");
+        });
+        errors.push(
+            local_client(&server)
+                .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+                .unwrap_err(),
+        );
+
+        assert_eq!(errors.len(), 5);
+        for e in &errors {
+            assert!(matches!(e, ClientError::Attachment(_)), "{e:?}");
+            assert_no_secrets(e);
+        }
+        assert!(violation_files(tmp.path()).is_empty());
+    }
+
+    fn fallback_case(alt: Option<&str>, cd: Option<&str>, ct: &str) -> String {
+        let server = MockServer::start();
+        let storage = MockServer::start();
+        detail_mock(&server, alt);
+        access_mock(&server, &signed_url(&storage));
+        storage.mock(|when, then| {
+            when.method(GET).path(SIGNED_PATH);
+            let then = then.status(200).header("content-type", ct).body([1u8]);
+            if let Some(cd) = cd {
+                then.header("content-disposition", cd);
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let saved = local_client(&server)
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
+            .unwrap();
+        saved
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn filename_falls_back_to_content_disposition_then_content_type() {
+        assert_eq!(
+            fallback_case(
+                None,
+                Some("attachment; filename=\"Notice 1.pdf\""),
+                "application/pdf"
+            ),
+            "violation-4242-1234567-Notice 1.pdf"
+        );
+        assert_eq!(
+            fallback_case(None, None, "image/png; charset=binary"),
+            "violation-4242-1234567-attachment.png"
+        );
+    }
+
+    #[test]
+    fn attachment_name_wins_and_is_sanitised() {
+        assert_eq!(
+            fallback_case(
+                Some("../Front deck.jpg"),
+                Some("attachment; filename=\"other.pdf\""),
+                "image/jpeg"
+            ),
+            "violation-4242-1234567-Front deck.jpg"
+        );
+    }
+
+    #[test]
+    fn content_disposition_extended_filename_is_decoded() {
+        assert_eq!(
+            fallback_case(
+                None,
+                Some("attachment; filename=\"fallback.pdf\"; filename*=UTF-8''Avis%20%C3%A9t%C3%A9.pdf"),
+                "application/pdf"
+            ),
+            "violation-4242-1234567-Avis été.pdf"
+        );
     }
 }

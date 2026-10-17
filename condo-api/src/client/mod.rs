@@ -6,13 +6,15 @@ pub mod violations;
 use crate::credentials::Credentials;
 use crate::error::ClientError;
 use crate::model::{
-    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, ViolationDetail,
-    ViolationFilterOptions, ViolationPage, ViolationQuery,
+    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, SavedAttachment,
+    ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
 };
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub trait LoginApi {
     fn login(&self) -> Result<(), ClientError>;
@@ -51,6 +53,19 @@ pub trait ViolationsApi {
     fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError>;
     /// One violation's metadata and update timeline (oldest first) by id.
     fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError>;
+    /// Download one attachment of a violation into `dest_dir` (created if missing), as
+    /// `violation-{violation_id}-{attachment_id}-{name}`, refusing files over `max_bytes`.
+    ///
+    /// The site answers the authenticated request with a redirect to a short-lived signed
+    /// storage URL; that URL is fetched by a separate cookie-less client and is never
+    /// returned, logged or included in an error.
+    fn download_violation_attachment(
+        &self,
+        violation_id: u64,
+        attachment_id: u64,
+        dest_dir: &Path,
+        max_bytes: u64,
+    ) -> Result<SavedAttachment, ClientError>;
 }
 
 /// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
@@ -62,7 +77,16 @@ pub trait CondoClient:
 impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi> CondoClient for T {}
 
 pub struct HttpCondoClient {
+    /// The authenticated client: session cookies, redirects never followed.
     pub(crate) http: Client,
+    /// The attachment-storage client: no cookie store, no default headers, redirects never
+    /// followed. It exists so a signed storage URL is fetched without any Condo Control
+    /// session state; it must never be used for a Condo Control URL.
+    pub(crate) storage: Client,
+    /// Which hosts a download redirect may point at. `is_storage_host` outside tests.
+    pub(crate) storage_host_ok: fn(&str) -> bool,
+    /// Whether the storage URL must be `https`. Relaxed only by `with_storage_host_check`.
+    pub(crate) storage_require_https: bool,
     pub(crate) base_url: String,
     pub(crate) creds: Credentials,
     pub(crate) violation_filters: Mutex<Option<ViolationFilterOptions>>,
@@ -87,12 +111,30 @@ impl HttpCondoClient {
             .redirect(Policy::none()) // we must see 302s to detect auth state
             .user_agent("condo-api/0.1")
             .build()?;
+        let storage = Client::builder()
+            .redirect(Policy::none())
+            .referer(false)
+            .user_agent("condo-api/0.1")
+            .timeout(Duration::from_secs(300))
+            .build()?;
         Ok(HttpCondoClient {
             http,
+            storage,
+            storage_host_ok: violations::is_storage_host,
+            storage_require_https: true,
             base_url: base_url.into(),
             creds,
             violation_filters: Mutex::new(None),
         })
+    }
+
+    /// Test hook: replace the storage-host check (and allow plain `http`), so a local mock
+    /// server can stand in for the storage host. Not for production use.
+    #[doc(hidden)]
+    pub fn with_storage_host_check(mut self, f: fn(&str) -> bool) -> HttpCondoClient {
+        self.storage_host_ok = f;
+        self.storage_require_https = false;
+        self
     }
 
     pub(crate) fn url(&self, path: &str) -> String {
@@ -244,6 +286,23 @@ impl ViolationsApi for HttpCondoClient {
 
     fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError> {
         self.with_reauth(|| self.get_violation_once(id))
+    }
+
+    fn download_violation_attachment(
+        &self,
+        violation_id: u64,
+        attachment_id: u64,
+        dest_dir: &Path,
+        max_bytes: u64,
+    ) -> Result<SavedAttachment, ClientError> {
+        self.with_reauth(|| {
+            self.download_violation_attachment_once(
+                violation_id,
+                attachment_id,
+                dest_dir,
+                max_bytes,
+            )
+        })
     }
 }
 

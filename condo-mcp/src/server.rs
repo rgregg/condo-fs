@@ -106,6 +106,7 @@ impl CondoMcp {
                 format!("Condo Control is unreachable ({inner}). This may be worth retrying.")
             }
             ClientError::Io(ref inner) => format!("Local I/O error: {inner}"),
+            ClientError::Attachment(ref inner) => format!("Attachment error: {inner}"),
             ClientError::PageStructure(ref inner) => {
                 log::debug!("page structure: {inner}");
                 "Condo Control's page layout has changed and this tool can no longer read it. \

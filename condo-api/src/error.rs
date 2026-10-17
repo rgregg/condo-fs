@@ -30,4 +30,8 @@ pub enum ClientError {
     NotFound,
     #[error("page structure error: {0}")]
     PageStructure(#[from] ParseError),
+    /// An attachment could not be downloaded. The message is always a fixed phrase: it never
+    /// carries a URL, the site's `Key`, or a pre-signed storage query.
+    #[error("attachment error: {0}")]
+    Attachment(String),
 }
