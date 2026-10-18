@@ -742,6 +742,7 @@ async fn list_violations_defaults_to_open_and_reports_total() {
     assert_eq!(json["total"], 918);
     assert_eq!(json["returned"], 3);
     assert_eq!(json["scan_complete"], true);
+    assert_eq!(json["matched"], 3, "no date filter: matched == returned");
     let first = &json["violations"][0];
     assert_eq!(first["id"], 107330);
     assert_eq!(first["name"], "Unscreened Kayaks");
@@ -849,6 +850,41 @@ async fn updated_since_keeps_same_day_ties_and_stops_at_older_rows() {
     assert_eq!(json["returned"], 2);
     assert_eq!(json["violations"].as_array().unwrap().len(), 2);
     assert_eq!(json["scan_complete"], true);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn updated_since_reports_matched_beyond_limit() {
+    let server = MockServer::start();
+    mock_login(&server);
+    mock_list_page(&server);
+    // 120 rows on or after the date, then an older one, across three pages of 50.
+    let mut dates = vec!["10/17/2026 admin"; 120];
+    dates.push("10/01/2026 admin");
+    dates.extend(vec!["09/30/2026"; 29]);
+    for (page, offset) in [0usize, 50, 100].iter().enumerate() {
+        let rows = &dates[page * 50..page * 50 + 50];
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/search-violation-new/")
+                .query_param("offset", offset.to_string());
+            then.status(200).body(search_json(918, rows));
+        });
+    }
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "list_violations",
+        serde_json::json!({ "updated_since": "2026-10-17", "limit": 50 }),
+    )
+    .await;
+
+    assert_eq!(json["matched"], 120);
+    assert_eq!(json["returned"], 50);
+    assert_eq!(json["violations"].as_array().unwrap().len(), 50);
+    assert_eq!(json["scan_complete"], true);
+    assert_eq!(json["total"], 918);
     client.cancel().await.unwrap();
 }
 
@@ -1060,6 +1096,7 @@ async fn get_violation_update_rejects_a_stale_update_count() {
             .await,
     );
 
+    assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert!(err.message.contains("get_violation"), "{}", err.message);
     client.cancel().await.unwrap();
 }

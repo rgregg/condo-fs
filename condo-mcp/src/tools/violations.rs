@@ -223,7 +223,10 @@ impl From<ViolationSummary> for ViolationRow {
 pub struct ViolationList {
     /// The site's total for the status/search/stage/type filter (before updated_since).
     pub total: u64,
-    /// Rows in `violations`.
+    /// Rows that met every filter, the updated_since date included, within the rows
+    /// scanned, before `limit` was applied. Without updated_since it equals `returned`.
+    pub matched: usize,
+    /// Rows in `violations`. Less than `matched` means `limit` cut the list.
     pub returned: usize,
     /// False only when an updated_since scan stopped at its 500-row cap before reaching
     /// older rows: there may be more matches than were seen.
@@ -403,10 +406,16 @@ impl CondoMcp {
                        (YYYY-MM-DD). Stage and type names must be ones the site currently \
                        offers in its filters; an unknown name returns the valid list. The \
                        list's last-updated value is a date only, so updated_since compares \
-                       dates and keeps same-day updates; it scans at most 500 rows and sets \
-                       scan_complete false if it stopped there. limit defaults to 50, max 200. \
-                       total is the site's count for the filter, so returned < total means \
-                       the list was cut short. Times are the association's local time. The \
+                       dates and keeps same-day updates. limit defaults to 50, max 200. \
+                       Without updated_since: total is the site's count for the filters, and \
+                       returned < total means limit cut the list. With updated_since: total \
+                       is still the site's count for the status/search/stage/type filters \
+                       only (before the date filter), so compare against matched instead: \
+                       matched is how many scanned rows met the date, and returned < matched \
+                       means limit cut the list (raise limit or narrow the filters); \
+                       scan_complete false means the 500-row scan cap stopped the scan before \
+                       it reached older rows, so more matches may exist. Times are the \
+                       association's local time. The \
                        site does not record when a violation's stage changed. Pass an id to \
                        get_violation for its timeline."
     )]
@@ -459,6 +468,7 @@ impl CondoMcp {
             let violations: Vec<ViolationRow> = page.rows.into_iter().map(Into::into).collect();
             return Ok(Json(ViolationList {
                 total: page.total,
+                matched: violations.len(),
                 returned: violations.len(),
                 scan_complete: true,
                 violations,
@@ -494,6 +504,7 @@ impl CondoMcp {
             })
             .await
             .map_err(|e| self.tool_error(e))?;
+        let matched = kept.len();
         let violations: Vec<ViolationRow> = kept
             .into_iter()
             .take(limit as usize)
@@ -501,6 +512,7 @@ impl CondoMcp {
             .collect();
         Ok(Json(ViolationList {
             total,
+            matched,
             returned: violations.len(),
             scan_complete,
             violations,

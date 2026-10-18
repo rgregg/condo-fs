@@ -255,13 +255,16 @@ Currently available tools:
   optional `status` (`open`, `closed`, `draft`, `past_due`, `void`, `resident_updated`,
   `all`; default `open`), `search`, `stage` and `violation_type` (by name), `updated_since`
   (`YYYY-MM-DD`) and `limit` (default 50, max 200). Returns the site's `total` for the
-  filter alongside the rows `returned`, so a cut-short list is visible as such.
+  filter, how many rows `matched`, and how many were `returned`, so a cut-short list is
+  visible as such.
 
   Stage and type names are matched (case-insensitively) against the filters the site
   currently lists; an unknown name returns the valid ones. The site has no date filter, so
   `updated_since` is applied by the tool: the list carries only a last-updated *date*, so
-  same-day updates are kept, and the scan stops after 500 rows with `scan_complete: false`
-  if it did not reach an older row.
+  same-day updates are kept. In that mode `total` is still the site's count before the date
+  filter; `matched` is how many scanned rows met the date, and `returned < matched` means
+  `limit` cut the list. The scan stops after 500 rows with `scan_complete: false` if it did
+  not reach an older row, so more matches may exist.
 - **`get_violation`** — a short summary of one violation: subject, unit, recipients, type,
   creator, current stage, the recorded Violation Date and due date, the number of updates,
   and a timeline of one line per update (timestamp, author, the first ~160 characters of
