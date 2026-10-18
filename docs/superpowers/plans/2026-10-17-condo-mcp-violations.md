@@ -64,11 +64,11 @@ Pure refactor; no behavior change. Done first, as its own commit.
   - `trait CondoClient: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi {}` with a blanket `impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi> CondoClient for T {}` so existing `use condo_api::CondoClient` call sites that need every method keep compiling.
 - `condo-fs`'s `Vfs<C>` is bounded on `C: LibraryApi + LoginApi` (whatever it actually calls); its `MockClient` implements only those two traits and loses its three `unimplemented!` methods.
 
-- [ ] **Step 1: Baseline.** Run the Global Constraints gate. Expected: green, 89 tests.
-- [ ] **Step 2: Split the trait** in `condo-api/src/client/mod.rs` as above, moving each method's doc comment with it. `impl CondoClient for HttpCondoClient` becomes one `impl` per new trait. Task 5's `ViolationsApi` is added later; do not add it here.
-- [ ] **Step 3: Narrow `condo-fs`.** Change the bounds in `vfs.rs`/`fs.rs` and trim `MockClient`. Expected: `condo-fs` no longer mentions announcements or events anywhere (`grep -rn "announcement\|list_events" condo-fs/src` returns nothing).
-- [ ] **Step 4: Gate.** Expected: green, still 89 tests.
-- [ ] **Step 5: Commit** `refactor: split CondoClient into per-domain traits`.
+- [x] **Step 1: Baseline.** Run the Global Constraints gate. Expected: green, 89 tests.
+- [x] **Step 2: Split the trait** in `condo-api/src/client/mod.rs` as above, moving each method's doc comment with it. `impl CondoClient for HttpCondoClient` becomes one `impl` per new trait. Task 5's `ViolationsApi` is added later; do not add it here.
+- [x] **Step 3: Narrow `condo-fs`.** Change the bounds in `vfs.rs`/`fs.rs` and trim `MockClient`. Expected: `condo-fs` no longer mentions announcements or events anywhere (`grep -rn "announcement\|list_events" condo-fs/src` returns nothing).
+- [x] **Step 4: Gate.** Expected: green, still 89 tests.
+- [x] **Step 5: Commit** `refactor: split CondoClient into per-domain traits`.
 
 ---
 
@@ -97,26 +97,26 @@ Pure refactor; no behavior change. Done first, as its own commit.
   ```
 - Produces (trait, in `client`): `trait ViolationsApi { fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError>; fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError>; }` implemented for `HttpCondoClient`; `violation_filters` fetches `/violationtracking/list-violations/` once and caches the result in a `Mutex<Option<ViolationFilterOptions>>` field on `HttpCondoClient`.
 
-- [ ] **Step 1: Capture and sanitise fixtures (live, needs phone approval).** Build the probe (`cargo build -p condo-api --features probe --bin condo-probe`) and run, with `--out-dir` in the scratchpad:
+- [x] **Step 1: Capture and sanitise fixtures (live, needs phone approval).** Build the probe (`cargo build -p condo-api --features probe --bin condo-probe`) and run, with `--out-dir` in the scratchpad:
   `asb condo-control -- bash -c './target/debug/condo-probe --credentials <(printf "USERNAME=%s\nPASSWORD=%s\n" "$CONDO_USERNAME" "$CONDO_PASSWORD") --out-dir <scratch> /violationtracking/list-violations/'`, then the same with `--xhr` for
   `"/violationTracking/search-violation-new/?WorkspaceID=<id from the page's #WorkspaceID>&SearchTerm=&SelectedViolationStatusID=-1&SelectedViolationTypeIDs=&SelectedCreatorID=-1&SelectedStageIDs=&userIsJustVoter=False&limit=25&offset=0&sort=LastUpdated&order=desc"`. Strip the probe's header block, sanitise per Global Constraints, keep 3–5 rows including one in each of: Warning, Proposed Fine/Option for Appeal Hearing, and a row whose `LastUpdated` is exactly as the site returns it. **Record, in the commit message, what you learned about the shape of `LastUpdated`** — the discovery notes say it is the date followed by a user name (e.g. `10/17/2026 admin`), not date-only as the spec states; the parser must handle both and keep the trailing text as `last_updated_by`. Also record where the type and stage dropdown options (value and label) live on the list page, and whether stages come from `/violationtracking/get-action-list-multiselect/` instead. If stages are not in the list page HTML, capture that endpoint too and have `parse_violation_filters` take both bodies (adjust the signature and this Interfaces block accordingly). Delete the raw dumps.
-- [ ] **Step 2: Failing parser tests** in `model/violations.rs` (`#[cfg(test)]`):
+- [x] **Step 2: Failing parser tests** in `model/violations.rs` (`#[cfg(test)]`):
   - `parses_rows_and_total` — fixture JSON → `total` equals the fixture's, first row's `id`, `stage`, `unit` match.
   - `last_updated_with_trailing_user_is_split` — `"10/17/2026 admin"` → `last_updated == 2026-10-17`, `last_updated_by == Some("admin")`; `"10/17/2026"` → `last_updated_by == None`.
   - `empty_rows_is_an_empty_page_not_an_error` — `{"total":0,"rows":[]}` → `rows.is_empty()`.
   - `malformed_json_is_a_parse_error` — returns `ClientError::Parse`.
   - `filters_page_yields_workspace_type_and_stage_ids` — from the fixture HTML, `workspace_id` equals the fixture's `#WorkspaceID` value; `types` and `stages` contain known fixture pairs; a page without `#WorkspaceID` → `ParseError::MissingElement`.
   - `status_site_ids_match_the_site` — all seven mappings in the Interfaces block.
-- [ ] **Step 3: Run; expect FAIL** (`cargo test -p condo-api violations`).
-- [ ] **Step 4: Implement** the types and parsers. `parse_violation_filters` reads `#WorkspaceID` by id and the type/stage `<option value>` lists by the select ids/classes found in Step 1, never by position. Dates: `%m/%d/%Y`; unparseable → `None`.
-- [ ] **Step 5: Failing client tests** in `client/violations.rs` using `httpmock` (pattern: `client/announcements.rs`):
+- [x] **Step 3: Run; expect FAIL** (`cargo test -p condo-api violations`).
+- [x] **Step 4: Implement** the types and parsers. `parse_violation_filters` reads `#WorkspaceID` by id and the type/stage `<option value>` lists by the select ids/classes found in Step 1, never by position. Dates: `%m/%d/%Y`; unparseable → `None`.
+- [x] **Step 5: Failing client tests** in `client/violations.rs` using `httpmock` (pattern: `client/announcements.rs`):
   - `list_violations_sends_the_site_query_and_xhr_header` — the mock requires `x-requested-with: XMLHttpRequest` and query params `WorkspaceID`, `SelectedViolationStatusID=-1`, `limit=25`, `offset=0`, `sort=LastUpdated`, `order=desc`, `userIsJustVoter=False`; returns the fixture; assert parsed `total`. The list-page mock is registered too (workspace id).
   - `type_and_stage_ids_are_comma_joined` — `type_ids [3,4]` → `SelectedViolationTypeIDs=3,4`.
   - `filters_are_fetched_once_and_cached` — two `list_violations` calls hit the list page mock exactly once (`.assert_hits(1)`).
   - `list_violations_302_to_login_is_an_auth_error` — same shape as the announcements test.
-- [ ] **Step 6: Run; expect FAIL.**
-- [ ] **Step 7: Implement `violation_filters` and `list_violations_once`** with `with_reauth`, redirect → `ClientError::Auth`, and the same `error_for_status` handling as announcements. Add the `ViolationsApi` impl and re-exports, and add `ViolationsApi` to the `CondoClient` supertrait list and its blanket impl.
-- [ ] **Step 8: Gate; commit** `feat(condo-api): list violations and read their filter options`.
+- [x] **Step 6: Run; expect FAIL.**
+- [x] **Step 7: Implement `violation_filters` and `list_violations_once`** with `with_reauth`, redirect → `ClientError::Auth`, and the same `error_for_status` handling as announcements. Add the `ViolationsApi` impl and re-exports, and add `ViolationsApi` to the `CondoClient` supertrait list and its blanket impl.
+- [x] **Step 8: Gate; commit** `feat(condo-api): list violations and read their filter options`.
 
 ---
 
@@ -143,8 +143,8 @@ Pure refactor; no behavior change. Done first, as its own commit.
   ```
   and `ViolationsApi::get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError>`.
 
-- [ ] **Step 1: Capture `/violationTracking/view-violation-details/{id}?status=-1`** for (a) a fine-track violation with several updates and (b) one with none, via the Task 2 Step 1 method; sanitise. While the raw capture exists, **answer and record in the commit message**: does any element carry a stable per-update identifier (element id, data attribute, edit/delete link id)? If yes, `site_id` is populated from it; if no, `site_id` stays `None` and the tools use `ordinal`. Also: does `?status=` change the response when omitted or wrong (second probe, one fetch with no `status`)? Delete raw dumps.
-- [ ] **Step 2: Failing parser tests:**
+- [x] **Step 1: Capture `/violationTracking/view-violation-details/{id}?status=-1`** for (a) a fine-track violation with several updates and (b) one with none, via the Task 2 Step 1 method; sanitise. While the raw capture exists, **answer and record in the commit message**: does any element carry a stable per-update identifier (element id, data attribute, edit/delete link id)? If yes, `site_id` is populated from it; if no, `site_id` stays `None` and the tools use `ordinal`. Also: does `?status=` change the response when omitted or wrong (second probe, one fetch with no `status`)? Delete raw dumps.
+- [x] **Step 2: Failing parser tests:**
   - `metadata_is_read_by_label_text` — subject, unit, recipients, type, created_by, stage, both dates equal the fixture's values.
   - `updates_are_oldest_first_with_ordinals` — the page lists newest first; `updates[0].ordinal == 1` and is the chronologically oldest; `posted_at` is monotonically non-decreasing.
   - `update_body_is_markdown_and_keeps_inline_image_attachment` — the image update has one attachment with the fixture's `FileRecordID`, and `body_markdown` does not contain the `Key`.
@@ -153,11 +153,11 @@ Pure refactor; no behavior change. Done first, as its own commit.
   - `markup_reordered_still_parses` — wrap the fixture's metadata rows in reversed order (built in the test by string manipulation) → same metadata; proves label-anchoring.
   - `debug_output_never_contains_the_key` — `format!("{:?}", detail)` does not contain the fixture's attachment key.
   - `fixtures_carry_no_real_keys` — every `Key=` value in every violation fixture equals `00000000-0000-0000-0000-000000000000`.
-- [ ] **Step 3: Run; expect FAIL.**
-- [ ] **Step 4: Implement `parse_violation_detail`.** Reuse the label-value helper and Markdown conversion from `model/announcements.rs` (extract them to a shared `pub(crate)` module if they are private there — that move is part of this step and must not change announcements behavior). Updates are found by the `#updateRows` container and its per-update tables; the add-update form, stage dropdown and editor scripts are ignored. Attachments: `access-file.aspx?FileRecordID=…&Key=…` links/images inside an update body; `name` from the link text/`alt`/`title` if any.
-- [ ] **Step 5: Failing client tests:** `get_violation_fetches_by_id_with_status_all` (mock path `/violationTracking/view-violation-details/<id>`, query `status=-1`, asserts parsed `subject`), `get_violation_404_is_not_found`, `get_violation_302_to_login_is_an_auth_error`, `get_violation_200_shell_is_a_structure_error`.
-- [ ] **Step 6: Run; expect FAIL; implement `get_violation_once`** like `get_announcement_once`; if Step 1 showed `?status=` matters, add the fallback the spec describes. Wire through `with_reauth`.
-- [ ] **Step 7: Gate; commit** `feat(condo-api): read a violation's metadata and update timeline`.
+- [x] **Step 3: Run; expect FAIL.**
+- [x] **Step 4: Implement `parse_violation_detail`.** Reuse the label-value helper and Markdown conversion from `model/announcements.rs` (extract them to a shared `pub(crate)` module if they are private there — that move is part of this step and must not change announcements behavior). Updates are found by the `#updateRows` container and its per-update tables; the add-update form, stage dropdown and editor scripts are ignored. Attachments: `access-file.aspx?FileRecordID=…&Key=…` links/images inside an update body; `name` from the link text/`alt`/`title` if any.
+- [x] **Step 5: Failing client tests:** `get_violation_fetches_by_id_with_status_all` (mock path `/violationTracking/view-violation-details/<id>`, query `status=-1`, asserts parsed `subject`), `get_violation_404_is_not_found`, `get_violation_302_to_login_is_an_auth_error`, `get_violation_200_shell_is_a_structure_error`.
+- [x] **Step 6: Run; expect FAIL; implement `get_violation_once`** like `get_announcement_once`; if Step 1 showed `?status=` matters, add the fallback the spec describes. Wire through `with_reauth`.
+- [x] **Step 7: Gate; commit** `feat(condo-api): read a violation's metadata and update timeline`.
 
 ---
 
@@ -182,8 +182,8 @@ Pure refactor; no behavior change. Done first, as its own commit.
   ```
   Behavior: re-read the violation (stateless), find the attachment by `id` across all updates (none → `ClientError::NotFound`), request `access-file.aspx?FileRecordID=…&Key=…&mode=preview` on the **authenticated** client (redirects not followed), require a 302 whose `Location` host passes `is_storage_host` (else `Attachment("unexpected download location")`), then GET that URL with a **separate cookie-less** `reqwest::blocking::Client` (built once in `HttpCondoClient::new`, no cookie store, redirects disabled), stream to `dest_dir/violation-{vid}-{aid}-{name}` honoring `max_bytes` (abort and delete the partial file past the cap → `Attachment("file exceeds size limit")`). Name: attachment `name`, else storage `Content-Disposition` filename, else `attachment` + extension from `Content-Type`. `dest_dir` is created if missing; the final canonical path must be inside `dest_dir`.
 
-- [ ] **Step 1: Failing pure tests:** `sanitise_filename_strips_separators_and_traversal` (`"../../etc/passwd"` and `"/abs/x.pdf"` and `"a\\b.jpg"` each contain no `/`, `\`, or `..` and are non-empty), `sanitise_filename_never_returns_empty` (`""`, `"..."`, `"///"` → `"attachment"`), `sanitise_filename_keeps_a_normal_name` (`"Notice 1.pdf"` unchanged), `is_storage_host_accepts_s3_only` (`ccc-filedata-prod.s3.ca-central-1.amazonaws.com` true; `evil.com`, `amazonaws.com.evil.com`, `notamazonaws.com` false).
-- [ ] **Step 2: Failing flow tests** (`httpmock`; the storage "host" is a second `MockServer`, so make the host check injectable: `HttpCondoClient` gets a `pub(crate) storage_host_ok: fn(&str) -> bool` field defaulting to `is_storage_host`, overridden in tests to allow `127.0.0.1`; expose it as `#[doc(hidden)] pub fn with_storage_host_check(self, f: fn(&str) -> bool) -> HttpCondoClient`, which `condo-mcp`'s integration tests also need):
+- [x] **Step 1: Failing pure tests:** `sanitise_filename_strips_separators_and_traversal` (`"../../etc/passwd"` and `"/abs/x.pdf"` and `"a\\b.jpg"` each contain no `/`, `\`, or `..` and are non-empty), `sanitise_filename_never_returns_empty` (`""`, `"..."`, `"///"` → `"attachment"`), `sanitise_filename_keeps_a_normal_name` (`"Notice 1.pdf"` unchanged), `is_storage_host_accepts_s3_only` (`ccc-filedata-prod.s3.ca-central-1.amazonaws.com` true; `evil.com`, `amazonaws.com.evil.com`, `notamazonaws.com` false).
+- [x] **Step 2: Failing flow tests** (`httpmock`; the storage "host" is a second `MockServer`, so make the host check injectable: `HttpCondoClient` gets a `pub(crate) storage_host_ok: fn(&str) -> bool` field defaulting to `is_storage_host`, overridden in tests to allow `127.0.0.1`; expose it as `#[doc(hidden)] pub fn with_storage_host_check(self, f: fn(&str) -> bool) -> HttpCondoClient`, which `condo-mcp`'s integration tests also need):
   - `downloads_through_the_redirect_and_saves_the_file` — step 1 mock returns 302 with `Location` to the storage mock; storage returns 3 bytes `image/jpeg`; result `path` exists, content matches, file name starts `violation-<vid>-<aid>-`, `bytes == 3`, `content_type == Some("image/jpeg")`.
   - `storage_request_carries_no_cookies_or_session_headers` — storage mock `.matches` asserts no `cookie` header, while the login mock set one on the main client.
   - `redirect_to_an_unexpected_host_is_refused_and_nothing_is_fetched` — with the default host check, `Location: https://evil.example/x` → `Attachment("unexpected download location")`; the evil host receives zero requests (no mock registered; assert error variant).
@@ -191,10 +191,10 @@ Pure refactor; no behavior change. Done first, as its own commit.
   - `unknown_attachment_id_is_not_found`.
   - `errors_never_contain_the_key_or_signed_url` — trigger each `Attachment` error above; assert `err.to_string()` contains neither the fixture-style `Key=` value nor `X-Amz`.
   - `filename_falls_back_to_content_disposition_then_content_type` — two cases.
-- [ ] **Step 3: Run; expect FAIL.**
-- [ ] **Step 4: Implement** per the behavior above, plus the `ClientError::Attachment` variant. Do not add a redirect-following option to the authenticated client. Log only `FileRecordID` and byte counts, never URLs.
-- [ ] **Step 5: Gate; commit** `feat(condo-api): download violation attachments through the site's signed redirect`.
-- [ ] **Step 6: Live check (needs phone approval; do not skip).** Using the Task 2 probe method plus `curl` on the `Location`, confirm the flow on (a) the known inline image and (b) **a non-image attachment (PDF) if any violation has one** — search recent violations' detail pages for `access-file.aspx` links whose update text suggests a notice or letter. Record the result in the PR description. If no non-image attachment can be found, the tool description in Task 5 must say only images have been verified.
+- [x] **Step 3: Run; expect FAIL.**
+- [x] **Step 4: Implement** per the behavior above, plus the `ClientError::Attachment` variant. Do not add a redirect-following option to the authenticated client. Log only `FileRecordID` and byte counts, never URLs.
+- [x] **Step 5: Gate; commit** `feat(condo-api): download violation attachments through the site's signed redirect`.
+- [x] **Step 6: Live check (needs phone approval; do not skip).** Using the Task 2 probe method plus `curl` on the `Location`, confirm the flow on (a) the known inline image and (b) **a non-image attachment (PDF) if any violation has one** — search recent violations' detail pages for `access-file.aspx` links whose update text suggests a notice or letter. Record the result in the PR description. If no non-image attachment can be found, the tool description in Task 5 must say only images have been verified.
 
 ---
 
@@ -213,7 +213,7 @@ Pure refactor; no behavior change. Done first, as its own commit.
   - `get_violation_update` params `{ id: u64, update: String, expected_update_count: Option<usize> }`. Mismatch with the current count → error telling the caller to re-run `get_violation`. Output `{ update, posted_at, author, body_markdown, attachments: [{ attachment_id: u64, name: Option<String> }] }`. Unknown `update` → `resource_not_found`.
   - `download_violation_attachment` params `{ violation_id: u64, attachment_id: u64 }`. Output `{ path, bytes, content_type }`; never file contents. Description states what has been verified (per Task 4 Step 6) and that the path is under the configured download folder.
 
-- [ ] **Step 1: Failing integration tests** in `condo-mcp/tests/server.rs` (helpers `mock_login`/`connect` exist; add `connect_with_download_dir`). Fixtures from `../condo-api/tests/fixtures/`.
+- [x] **Step 1: Failing integration tests** in `condo-mcp/tests/server.rs` (helpers `mock_login`/`connect` exist; add `connect_with_download_dir`). Fixtures from `../condo-api/tests/fixtures/`.
   - `violation_tools_are_advertised_with_descriptions` — all four names present, non-empty descriptions.
   - `list_violations_defaults_to_open_and_reports_total` — mock requires `SelectedViolationStatusID=1`; output `total`/`returned` as fixture.
   - `list_violations_unknown_stage_lists_valid_names` — `invalid_params` and the message contains a real fixture stage name.
@@ -224,9 +224,9 @@ Pure refactor; no behavior change. Done first, as its own commit.
   - `get_violation_never_labels_milestones` — serialised output does not contain `"first notice"` or `"milestone"` (case-insensitive).
   - `get_violation_update_returns_full_markdown_and_attachment_ids` and `get_violation_update_rejects_a_stale_update_count` and `get_violation_update_unknown_update_is_not_found`.
   - `download_violation_attachment_saves_under_the_configured_dir_and_returns_the_path` — storage as a second mock (host check overridden through `#[doc(hidden)] CondoMcp::with_storage_host_check`, which applies `HttpCondoClient::with_storage_host_check` while the `Arc` is still unique); file exists under the tempdir; output contains no file bytes and no `Key`/`X-Amz`.
-- [ ] **Step 2: Run; expect FAIL** (`cargo test -p condo-mcp violation`).
-- [ ] **Step 3: Implement** `tools/violations.rs` following `tools/announcements.rs` (output structs derive `Serialize, schemars::JsonSchema`; `From` conversions; shared `format_timestamp`), register the router in `build_router()`, add `--download-dir`. The plain-text snippet helper is a small pure fn with its own unit tests (`snippet_collapses_whitespace_and_strips_markdown`, `snippet_truncates_on_a_char_boundary` using a multibyte character at the cut).
-- [ ] **Step 4: Run; expect PASS. Gate.**
-- [ ] **Step 5: README.** Add the four tools to the `condo-mcp` section: what each returns, that stage-change dates are not recorded by the site, that only currently-listed filters apply, the `--download-dir` flag and default, and what attachment types are verified.
-- [ ] **Step 6: Final gate; commit** `feat(condo-mcp): add the violation tools`.
+- [x] **Step 2: Run; expect FAIL** (`cargo test -p condo-mcp violation`).
+- [x] **Step 3: Implement** `tools/violations.rs` following `tools/announcements.rs` (output structs derive `Serialize, schemars::JsonSchema`; `From` conversions; shared `format_timestamp`), register the router in `build_router()`, add `--download-dir`. The plain-text snippet helper is a small pure fn with its own unit tests (`snippet_collapses_whitespace_and_strips_markdown`, `snippet_truncates_on_a_char_boundary` using a multibyte character at the cut).
+- [x] **Step 4: Run; expect PASS. Gate.**
+- [x] **Step 5: README.** Add the four tools to the `condo-mcp` section: what each returns, that stage-change dates are not recorded by the site, that only currently-listed filters apply, the `--download-dir` flag and default, and what attachment types are verified.
+- [x] **Step 6: Final gate; commit** `feat(condo-mcp): add the violation tools`.
 - [ ] **Step 7: Tick every checkbox in this plan and in the spec's open items; commit** `docs: record the violations plan as complete`. Then use superpowers:finishing-a-development-branch.
