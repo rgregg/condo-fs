@@ -284,7 +284,14 @@ fn parse_violation_update(
             .map(str::to_string)
             .or_else(|| Some(el.text().collect::<String>()))
             .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty());
+            .filter(|n| !n.is_empty())
+            // A label that is the URL itself (an editor autolink) would carry the key.
+            .filter(|n| {
+                let l = n.to_lowercase();
+                !(l.contains("access-file")
+                    || l.contains("key=")
+                    || l.contains(&key.to_lowercase()))
+            });
         attachments.push(ViolationAttachment { id, name, key });
     }
     let mut markdown = html::to_markdown(&body.inner_html(), "td.divUpdateText")?;
@@ -711,5 +718,28 @@ mod tests {
                 .to_lowercase()
                 .contains(&secret.to_lowercase()));
         }
+    }
+
+    #[test]
+    fn attachment_labels_never_carry_the_key() {
+        let secret = "ABCDEF12-3456-7890-ABCD-EF1234567890";
+        let url = format!("https://x/access-file.aspx?FileRecordID=5&Key={secret}");
+        let bodies = [
+            format!(r#"<p><a href="{url}">{url}</a></p>"#),
+            format!(r#"<p><a href="{url}" title="{url}">x</a></p>"#),
+            format!(r#"<p><img alt="{url}" src="{url}"></p>"#),
+        ];
+        for body in bodies {
+            let d = parse_violation_detail(4242, &with_body(&body)).unwrap();
+            let a = &d.updates[0].attachments[0];
+            assert_eq!(a.name, None, "{body}");
+            assert!(!format!("{d:?}").contains(secret));
+        }
+        let ok = format!(r#"<p><a href="{url}">kayak permit</a></p>"#);
+        let d = parse_violation_detail(4242, &with_body(&ok)).unwrap();
+        assert_eq!(
+            d.updates[0].attachments[0].name.as_deref(),
+            Some("kayak permit")
+        );
     }
 }

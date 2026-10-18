@@ -1102,6 +1102,29 @@ async fn get_violation_update_rejects_a_stale_update_count() {
 }
 
 #[tokio::test]
+async fn get_violation_for_an_unknown_id_is_resource_not_found() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/violationTracking/view-violation-details/99999999");
+        then.status(302)
+            .header("location", "/violationTracking/list-violations");
+    });
+    let client = connect(&server, 137473).await;
+    let err = mcp_error(
+        client
+            .call_tool(
+                CallToolRequestParams::new("get_violation")
+                    .with_arguments(args(serde_json::json!({ "id": 99999999 }))),
+            )
+            .await,
+    );
+    assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn get_violation_update_unknown_update_is_not_found() {
     let server = MockServer::start();
     mock_login(&server);

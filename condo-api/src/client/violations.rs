@@ -285,7 +285,21 @@ impl HttpCondoClient {
             .query(&[("status", "-1")])
             .send()?;
         if resp.status().is_redirection() {
-            return Err(ClientError::Auth);
+            // The site answers an unknown id with a redirect to the list page. Only a
+            // redirect to the login page means the session is gone.
+            let to_login = resp
+                .headers()
+                .get(LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|loc| {
+                    let l = loc.to_ascii_lowercase();
+                    l.starts_with("/login") || l.contains("/login?")
+                });
+            return Err(if to_login {
+                ClientError::Auth
+            } else {
+                ClientError::NotFound
+            });
         }
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(ClientError::NotFound);
@@ -633,6 +647,32 @@ mod tests {
     }
 
     #[test]
+    fn get_violation_302_to_the_list_page_is_not_found() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/99999999");
+            then.status(302)
+                .header("location", "/violationTracking/list-violations");
+        });
+        let login = server.mock(|when, then| {
+            when.method(GET).path("/login");
+            then.status(200);
+        });
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/login/login-post");
+            then.status(302).header("location", "/my/my-home");
+        });
+        let client = HttpCondoClient::new(server.base_url(), creds()).unwrap();
+        assert!(matches!(
+            client.get_violation(99999999),
+            Err(ClientError::NotFound)
+        ));
+        login.assert_hits(0);
+        post.assert_hits(0);
+    }
+
+    #[test]
     fn get_violation_200_shell_is_a_structure_error() {
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -944,6 +984,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = local_client(&server)
             .download_violation_attachment(4242, 999, tmp.path(), 1024)
+            .unwrap_err();
+        assert!(matches!(err, ClientError::NotFound), "{err:?}");
+        access.assert_hits(0);
+    }
+
+    #[test]
+    fn download_with_unknown_violation_is_not_found() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/violationTracking/view-violation-details/4242");
+            then.status(302)
+                .header("location", "/violationTracking/list-violations");
+        });
+        let access = server.mock(|when, then| {
+            when.method(GET).path("/access-file.aspx");
+            then.status(500);
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = local_client(&server)
+            .download_violation_attachment(4242, 1234567, tmp.path(), 1024)
             .unwrap_err();
         assert!(matches!(err, ClientError::NotFound), "{err:?}");
         access.assert_hits(0);
