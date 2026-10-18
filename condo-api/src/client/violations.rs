@@ -68,20 +68,47 @@ fn media_type(header: &str) -> Option<String> {
     (!essence.is_empty()).then_some(essence)
 }
 
-fn extension_for(media_type: &str) -> Option<&'static str> {
+/// For a media type: the extension to append, followed by every extension that already
+/// matches it. Unlisted types get no extension.
+fn type_extensions(media_type: &str) -> Option<&'static [&'static str]> {
     Some(match media_type {
-        "image/jpeg" | "image/jpg" | "image/pjpeg" => "jpg",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/heic" => "heic",
-        "image/tiff" => "tiff",
-        "application/pdf" => "pdf",
-        "text/plain" => "txt",
-        "application/msword" => "doc",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "image/jpeg" | "image/jpg" | "image/pjpeg" => &["jpg", "jpeg", "jpe"],
+        "image/png" => &["png"],
+        "image/gif" => &["gif"],
+        "image/webp" => &["webp"],
+        "image/heic" | "image/heif" => &["heic", "heif"],
+        "image/tiff" => &["tiff", "tif"],
+        "application/pdf" => &["pdf"],
+        "audio/mpeg" | "audio/mp3" => &["mp3"],
+        "audio/mp4" | "audio/x-m4a" => &["m4a"],
+        "video/mp4" => &["mp4", "m4v"],
+        "video/quicktime" => &["mov", "qt"],
+        "text/plain" => &["txt", "text", "log"],
+        "application/zip" | "application/x-zip-compressed" => &["zip"],
+        "application/msword" => &["doc"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => &["docx"],
+        "application/vnd.ms-excel" => &["xls"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => &["xlsx"],
         _ => return None,
     })
+}
+
+/// Append the media type's extension to an already-sanitised `name` unless it already ends
+/// in one consistent with that type. The site's attachment names are display labels
+/// ("img 8526", "Mr. Smith photo"), so a trailing dot-segment counts as an extension only
+/// when it is 1–5 ASCII alphanumerics; with an unknown type the name is left alone.
+fn with_type_extension(name: String, media_type: Option<&str>) -> String {
+    let Some(exts) = media_type.and_then(type_extensions) else {
+        return name;
+    };
+    let existing = name
+        .rsplit_once('.')
+        .map(|(_, e)| e)
+        .filter(|e| (1..=5).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric()));
+    if existing.is_some_and(|e| exts.iter().any(|x| x.eq_ignore_ascii_case(e))) {
+        return name;
+    }
+    format!("{name}.{}", exts[0])
 }
 
 fn percent_decode(s: &str) -> String {
@@ -356,14 +383,11 @@ impl HttpCondoClient {
             .name
             .clone()
             .or_else(|| header(CONTENT_DISPOSITION).and_then(content_disposition_filename))
-            .unwrap_or_else(|| match content_type.as_deref().and_then(extension_for) {
-                Some(ext) => format!("attachment.{ext}"),
-                None => "attachment".to_string(),
-            });
-        let file_name = format!(
-            "violation-{violation_id}-{attachment_id}-{}",
-            sanitise_filename(&name)
-        );
+            .unwrap_or_default();
+        // Sanitise first (an empty name becomes "attachment"), then add the extension, so
+        // the appended part can never reintroduce a separator.
+        let name = with_type_extension(sanitise_filename(&name), content_type.as_deref());
+        let file_name = format!("violation-{violation_id}-{attachment_id}-{name}");
 
         fs::create_dir_all(dest_dir)?;
         let dir = dest_dir.canonicalize()?;
@@ -626,7 +650,9 @@ mod tests {
 
     // ---- attachment download ----
 
-    use super::{copy_capped, is_storage_host, sanitise_filename, stream_to_file};
+    use super::{
+        copy_capped, is_storage_host, sanitise_filename, stream_to_file, with_type_extension,
+    };
     use std::path::Path;
 
     const KEY: &str = "00000000-0000-0000-0000-000000000000";
@@ -1067,6 +1093,107 @@ mod tests {
                 "application/pdf"
             ),
             "violation-4242-1234567-Avis été.pdf"
+        );
+    }
+
+    #[test]
+    fn name_without_extension_gets_one_from_content_type() {
+        for (name, ct, want) in [
+            (
+                "hpma kayak agreement",
+                "application/pdf",
+                "hpma kayak agreement.pdf",
+            ),
+            ("img 8526", "image/jpeg", "img 8526.jpg"),
+            ("baby #2", "audio/mpeg", "baby #2.mp3"),
+            ("7", "video/quicktime", "7.mov"),
+            ("image (3)", "image/png", "image (3).png"),
+            (
+                "kayak permit l 6 (yellow easy rider)",
+                "image/heic",
+                "kayak permit l 6 (yellow easy rider).heic",
+            ),
+            ("clip", "video/mp4", "clip.mp4"),
+            ("log", "text/plain", "log.txt"),
+            ("bundle", "application/zip", "bundle.zip"),
+            ("letter", "application/msword", "letter.doc"),
+            (
+                "letter",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "letter.docx",
+            ),
+            (
+                "fines",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "fines.xlsx",
+            ),
+            ("pic", "image/gif", "pic.gif"),
+            ("pic", "image/webp", "pic.webp"),
+            // A numeric "extension" that contradicts the type is not one.
+            ("img.8526", "image/jpeg", "img.8526.jpg"),
+        ] {
+            assert_eq!(
+                with_type_extension(name.into(), Some(ct)),
+                want,
+                "{name} {ct}"
+            );
+        }
+        // End to end: the site's extension-less label gets the PDF extension.
+        assert_eq!(
+            fallback_case(Some("hpma kayak agreement"), None, "application/pdf"),
+            "violation-4242-1234567-hpma kayak agreement.pdf"
+        );
+    }
+
+    #[test]
+    fn existing_extension_is_kept() {
+        for (name, ct) in [
+            ("notice.pdf", "application/pdf"),
+            ("Notice.PDF", "application/pdf"),
+            ("photo.jpeg", "image/jpeg"),
+            ("photo.jpg", "image/jpeg"),
+            ("clip.mov", "video/quicktime"),
+            ("song.mp3", "audio/mpeg"),
+        ] {
+            assert_eq!(
+                with_type_extension(name.into(), Some(ct)),
+                name,
+                "{name} {ct}"
+            );
+        }
+        // An extension is kept when the type says nothing to contradict it.
+        assert_eq!(with_type_extension("a.pdf".into(), None), "a.pdf");
+        assert_eq!(
+            with_type_extension("a.pdf".into(), Some("application/octet-stream")),
+            "a.pdf"
+        );
+    }
+
+    #[test]
+    fn dot_inside_a_label_is_not_an_extension() {
+        assert_eq!(
+            with_type_extension("Mr. Smith photo".into(), Some("image/jpeg")),
+            "Mr. Smith photo.jpg"
+        );
+        assert_eq!(
+            fallback_case(Some("Mr. Smith photo"), None, "image/jpeg"),
+            "violation-4242-1234567-Mr. Smith photo.jpg"
+        );
+    }
+
+    #[test]
+    fn unknown_content_type_adds_no_extension() {
+        for ct in [
+            None,
+            Some("application/octet-stream"),
+            Some(""),
+            Some("x/\u{0}"),
+        ] {
+            assert_eq!(with_type_extension("image (3)".into(), ct), "image (3)");
+        }
+        assert_eq!(
+            fallback_case(Some("image (3)"), None, "application/x-unknown"),
+            "violation-4242-1234567-image (3)"
         );
     }
 }
