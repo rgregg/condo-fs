@@ -39,7 +39,7 @@ impl HttpCondoClient {
 #[cfg(test)]
 mod tests {
     use crate::client::tests::creds;
-    use crate::{ClientError, CondoClient, HttpCondoClient};
+    use crate::{AnnouncementsApi, ClientError, HttpCondoClient};
     use httpmock::prelude::*;
 
     #[test]

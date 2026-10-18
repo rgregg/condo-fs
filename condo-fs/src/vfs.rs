@@ -1,6 +1,6 @@
 use crate::cache::ContentCache;
 use crate::names;
-use condo_api::{ClientError, CondoClient, Entry};
+use condo_api::{ClientError, Entry, LibraryApi};
 use fuser::FileType;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -79,7 +79,7 @@ struct Inner {
     listed_at: HashMap<u64, Instant>,
 }
 
-pub struct Vfs<C: CondoClient> {
+pub struct Vfs<C: LibraryApi> {
     client: C,
     cache: ContentCache,
     meta_ttl: Duration,
@@ -88,7 +88,7 @@ pub struct Vfs<C: CondoClient> {
     inner: Mutex<Inner>,
 }
 
-impl<C: CondoClient> Vfs<C> {
+impl<C: LibraryApi> Vfs<C> {
     pub fn new(
         client: C,
         root_folder_id: u64,
@@ -333,7 +333,7 @@ fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use condo_api::{AnnouncementDetail, AnnouncementSummary, Event, FileMeta};
+    use condo_api::{FileMeta, LoginApi};
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -344,10 +344,13 @@ mod tests {
         download_calls: AtomicU32,
     }
 
-    impl CondoClient for MockClient {
+    impl LoginApi for MockClient {
         fn login(&self) -> Result<(), ClientError> {
             Ok(())
         }
+    }
+
+    impl LibraryApi for MockClient {
         fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
             Ok(self.folders.get(&folder_id).cloned().unwrap_or_default())
         }
@@ -364,15 +367,6 @@ mod tests {
             let (bytes, _) = self.files.get(&file_id).ok_or(ClientError::NotFound)?;
             out.write_all(bytes)?;
             Ok(bytes.len() as u64)
-        }
-        fn list_events(&self, _start: i64, _end: i64) -> Result<Vec<Event>, ClientError> {
-            unimplemented!("the FUSE layer never lists calendar events")
-        }
-        fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
-            unimplemented!("the FUSE layer never lists announcements")
-        }
-        fn get_announcement(&self, _id: u64) -> Result<AnnouncementDetail, ClientError> {
-            unimplemented!("the FUSE layer never reads a single announcement")
         }
     }
 

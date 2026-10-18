@@ -1,14 +1,10 @@
 use crate::server::CondoMcp;
-use condo_api::{AnnouncementDetail, AnnouncementSummary, Attachment, CondoClient};
+use crate::tools::format_timestamp;
+use condo_api::{AnnouncementDetail, AnnouncementSummary, AnnouncementsApi, Attachment};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::ErrorData;
 use rmcp::tool;
 use serde::{Deserialize, Serialize};
-
-/// Format a naive local timestamp the same way across every announcement tool.
-fn format_timestamp(d: chrono::NaiveDateTime) -> String {
-    d.format("%Y-%m-%dT%H:%M:%S").to_string()
-}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListAnnouncementsParams {}

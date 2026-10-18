@@ -86,7 +86,7 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::client::tests::creds;
-    use crate::client::CondoClient;
+    use crate::client::LibraryApi;
     use httpmock::prelude::*;
 
     #[test]

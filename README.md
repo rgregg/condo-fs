@@ -250,6 +250,41 @@ Currently available tools:
   `list_announcements`. Returns the title, who posted it, when it was posted and expires,
   and the full text converted from the site's HTML to Markdown. Attachments are listed by
   name and upload date only — their contents cannot be downloaded.
+- **`list_violations`** — list violations as compact rows (id, name, type, unit, current
+  stage, due date, last-updated date and who updated it), newest update first. Takes
+  optional `status` (`open`, `closed`, `draft`, `past_due`, `void`, `resident_updated`,
+  `all`; default `open`), `search`, `stage` and `violation_type` (by name), `updated_since`
+  (`YYYY-MM-DD`) and `limit` (default 50, max 200). Returns the site's `total` for the
+  filter, how many rows `matched`, and how many were `returned`, so a cut-short list is
+  visible as such.
+
+  Stage and type names are matched (case-insensitively) against the filters the site
+  currently lists; an unknown name returns the valid ones. The site has no date filter, so
+  `updated_since` is applied by the tool: the list carries only a last-updated *date*, so
+  same-day updates are kept. In that mode `total` is still the site's count before the date
+  filter; `matched` is how many scanned rows met the date, and `returned < matched` means
+  `limit` cut the list. The scan stops after 500 rows with `scan_complete: false` if it did
+  not reach an older row, so more matches may exist.
+- **`get_violation`** — a short summary of one violation: subject, unit, recipients, type,
+  creator, current stage, the recorded Violation Date and due date, the number of updates,
+  and a timeline of one line per update (timestamp, author, the first ~160 characters of
+  plain text), newest first and capped at 25 lines. Each line carries the `update` value
+  for `get_violation_update`.
+- **`get_violation_update`** — one update in full: author, timestamp, the whole body as
+  Markdown, and the attachments it references, each with an `attachment_id`. Updates are
+  numbered oldest-first (1 is the oldest); pass `get_violation`'s `update_count` as
+  `expected_update_count` and the call fails if new updates have arrived since.
+- **`download_violation_attachment`** — save one attachment to the download folder (see
+  `--download-dir`) as `violation-{id}-{attachment_id}-{name}` and return its path, size
+  and content type, never its contents. Files over 50 MB are refused. Images, audio, video
+  and PDFs have been verified to download; other types are untested. Attachment names on
+  the site are display labels, so the extension comes from the file's content type.
+
+  **What the site records, and what it doesn't:** each violation's *current* stage, its
+  Violation Date and due date, and every update with its own timestamp. It does **not**
+  record when a violation's stage changed, so the tools never infer when a warning or a
+  fine notice was sent; on fine-track stages `get_violation` says so and points at the
+  timeline. All violation times are the association's local time, with no zone.
 
 Build it the same way as `condo-fs`:
 
@@ -284,6 +319,7 @@ claude mcp add condo -- /path/to/condo-fs/target/release/condo-mcp
 | `--credentials <path>` | `~/tokens/condo-control.txt` | Credentials file (same format as `condo-fs`; see [Credentials](#credentials)) |
 | `--base-url <url>` | `https://app.condocontrol.com` | Condo Control base URL |
 | `--root <id>` | `137473` | Root library folder ID (same meaning as `condo-fs`'s `--root`) |
+| `--download-dir <path>` | `~/condo-downloads` | Folder `download_violation_attachment` saves into; created on first use |
 
 Login is lazy — the credentials file is only read and used on the first tool call, so a
 missing or bad credentials file surfaces as a normal tool error rather than a startup

@@ -1,19 +1,32 @@
 pub mod announcements;
 pub mod calendar;
 pub mod library;
+pub mod violations;
 
 use crate::credentials::Credentials;
 use crate::error::ClientError;
-use crate::model::{AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta};
+use crate::model::{
+    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, SavedAttachment,
+    ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
+};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use std::io::Write;
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
 
-pub trait CondoClient {
+pub trait LoginApi {
     fn login(&self) -> Result<(), ClientError>;
+}
+
+pub trait LibraryApi {
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError>;
     fn file_meta(&self, file_id: u64) -> Result<FileMeta, ClientError>;
     fn download_file(&self, file_id: u64, out: &mut dyn Write) -> Result<u64, ClientError>;
+}
+
+pub trait CalendarApi {
     /// List amenity bookings between two instants, given as Unix seconds.
     ///
     /// `start`/`end` carry no timezone, but the endpoint interprets them — and reports
@@ -23,16 +36,60 @@ pub trait CondoClient {
     /// longer note on `HttpCondoClient::list_events_once` and how `condo_mcp`'s
     /// `list_events` tool compensates for it.
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError>;
+}
+
+pub trait AnnouncementsApi {
     /// List currently-posted announcements. The archive is not reachable read-only.
     fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError>;
     /// Fetch one announcement's full text and attachment list by id.
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError>;
 }
 
+pub trait ViolationsApi {
+    /// The workspace id and the violation type/stage dropdown options. Fetched once from
+    /// the list page and cached for the life of the client.
+    fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError>;
+    /// One page of the violations list.
+    fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError>;
+    /// One violation's metadata and update timeline (oldest first) by id.
+    fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError>;
+    /// Download one attachment of a violation into `dest_dir` (created if missing), as
+    /// `violation-{violation_id}-{attachment_id}-{name}`, refusing files over `max_bytes`.
+    ///
+    /// The site answers the authenticated request with a redirect to a short-lived signed
+    /// storage URL; that URL is fetched by a separate cookie-less client and is never
+    /// returned, logged or included in an error.
+    fn download_violation_attachment(
+        &self,
+        violation_id: u64,
+        attachment_id: u64,
+        dest_dir: &Path,
+        max_bytes: u64,
+    ) -> Result<SavedAttachment, ClientError>;
+}
+
+/// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
+pub trait CondoClient:
+    LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi
+{
+}
+
+impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi> CondoClient for T {}
+
 pub struct HttpCondoClient {
+    /// The authenticated client: session cookies, redirects never followed.
     pub(crate) http: Client,
+    /// The attachment-storage client: no cookie store, no default headers, redirects never
+    /// followed. It exists so a signed storage URL is fetched without any Condo Control
+    /// session state; it must never be used for a Condo Control URL.
+    pub(crate) storage: Client,
+    /// Which hosts a download redirect may point at. `is_storage_host` outside tests.
+    pub(crate) storage_host_ok: fn(&str) -> bool,
+    /// Whether the storage URL must be `https`. Relaxed only by `with_storage_host_check`.
+    pub(crate) storage_require_https: bool,
     pub(crate) base_url: String,
     pub(crate) creds: Credentials,
+    pub(crate) violation_filters: Mutex<Option<ViolationFilterOptions>>,
 }
 
 /// A verbatim capture of one GET response, for endpoint discovery.
@@ -54,11 +111,30 @@ impl HttpCondoClient {
             .redirect(Policy::none()) // we must see 302s to detect auth state
             .user_agent("condo-api/0.1")
             .build()?;
+        let storage = Client::builder()
+            .redirect(Policy::none())
+            .referer(false)
+            .user_agent("condo-api/0.1")
+            .timeout(Duration::from_secs(300))
+            .build()?;
         Ok(HttpCondoClient {
             http,
+            storage,
+            storage_host_ok: violations::is_storage_host,
+            storage_require_https: true,
             base_url: base_url.into(),
             creds,
+            violation_filters: Mutex::new(None),
         })
+    }
+
+    /// Test hook: replace the storage-host check (and allow plain `http`), so a local mock
+    /// server can stand in for the storage host. Not for production use.
+    #[doc(hidden)]
+    pub fn with_storage_host_check(mut self, f: fn(&str) -> bool) -> HttpCondoClient {
+        self.storage_host_ok = f;
+        self.storage_require_https = false;
+        self
     }
 
     pub(crate) fn url(&self, path: &str) -> String {
@@ -129,7 +205,7 @@ impl HttpCondoClient {
     }
 }
 
-impl CondoClient for HttpCondoClient {
+impl LoginApi for HttpCondoClient {
     fn login(&self) -> Result<(), ClientError> {
         // 1. GET /login to obtain a session cookie.
         self.http.get(self.url("/login")).send()?;
@@ -159,7 +235,9 @@ impl CondoClient for HttpCondoClient {
         }
         Ok(())
     }
+}
 
+impl LibraryApi for HttpCondoClient {
     fn list_folder(&self, folder_id: u64) -> Result<Vec<Entry>, ClientError> {
         self.with_reauth(|| self.list_folder_once(folder_id))
     }
@@ -179,17 +257,52 @@ impl CondoClient for HttpCondoClient {
             other => other,
         }
     }
+}
 
+impl CalendarApi for HttpCondoClient {
     fn list_events(&self, start: i64, end: i64) -> Result<Vec<Event>, ClientError> {
         self.with_reauth(|| self.list_events_once(start, end))
     }
+}
 
+impl AnnouncementsApi for HttpCondoClient {
     fn list_announcements(&self) -> Result<Vec<AnnouncementSummary>, ClientError> {
         self.with_reauth(|| self.list_announcements_once())
     }
 
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError> {
         self.with_reauth(|| self.get_announcement_once(id))
+    }
+}
+
+impl ViolationsApi for HttpCondoClient {
+    fn violation_filters(&self) -> Result<ViolationFilterOptions, ClientError> {
+        self.violation_filters_cached()
+    }
+
+    fn list_violations(&self, q: &ViolationQuery) -> Result<ViolationPage, ClientError> {
+        self.with_reauth(|| self.list_violations_once(q))
+    }
+
+    fn get_violation(&self, id: u64) -> Result<ViolationDetail, ClientError> {
+        self.with_reauth(|| self.get_violation_once(id))
+    }
+
+    fn download_violation_attachment(
+        &self,
+        violation_id: u64,
+        attachment_id: u64,
+        dest_dir: &Path,
+        max_bytes: u64,
+    ) -> Result<SavedAttachment, ClientError> {
+        self.with_reauth(|| {
+            self.download_violation_attachment_once(
+                violation_id,
+                attachment_id,
+                dest_dir,
+                max_bytes,
+            )
+        })
     }
 }
 

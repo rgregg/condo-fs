@@ -20,4 +20,8 @@ pub struct Args {
     /// Root folder ID in the File Library
     #[arg(long, default_value_t = 137473)]
     pub root: u64,
+
+    /// Folder violation attachments are downloaded into (created on first use)
+    #[arg(long, default_value = server::DEFAULT_DOWNLOAD_DIR)]
+    pub download_dir: String,
 }
