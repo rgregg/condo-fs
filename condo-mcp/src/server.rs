@@ -3,7 +3,11 @@ use condo_api::paths::expand_tilde;
 use condo_api::{ClientError, Credentials, HttpCondoClient, LoginApi};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::ErrorData;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Where attachments are saved unless `--download-dir` says otherwise.
+pub const DEFAULT_DOWNLOAD_DIR: &str = "~/condo-downloads";
 
 #[derive(Clone)]
 pub struct CondoMcp {
@@ -14,6 +18,8 @@ pub struct CondoMcp {
     pub(crate) root: u64,
     /// Shown in auth errors so the user knows which file to fix.
     creds_path: String,
+    /// Folder `download_violation_attachment` saves into; created on first use.
+    pub(crate) download_dir: PathBuf,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
@@ -38,8 +44,29 @@ impl CondoMcp {
             logged_in: Arc::new(Mutex::new(false)),
             root,
             creds_path,
+            download_dir: expand_tilde(DEFAULT_DOWNLOAD_DIR),
             tool_router: Self::build_router(),
         })
+    }
+
+    /// Save downloaded attachments under `dir` instead of the default folder.
+    pub fn with_download_dir(mut self, dir: impl Into<PathBuf>) -> CondoMcp {
+        self.download_dir = dir.into();
+        self
+    }
+
+    /// Test seam: let attachment downloads follow redirects to hosts `f` accepts, over plain
+    /// http too. Applies `HttpCondoClient::with_storage_host_check`.
+    ///
+    /// # Panics
+    ///
+    /// If the client is already shared, i.e. called after the server was cloned or started.
+    #[doc(hidden)]
+    pub fn with_storage_host_check(mut self, f: fn(&str) -> bool) -> CondoMcp {
+        let client = Arc::try_unwrap(self.client)
+            .unwrap_or_else(|_| panic!("with_storage_host_check needs an unshared client"));
+        self.client = Arc::new(client.with_storage_host_check(f));
+        self
     }
 
     pub fn from_args(args: &Args) -> anyhow::Result<CondoMcp> {
@@ -50,7 +77,8 @@ impl CondoMcp {
             creds,
             args.root,
             path.display().to_string(),
-        )?)
+        )?
+        .with_download_dir(expand_tilde(&args.download_dir)))
     }
 
     /// Run a blocking client call off the async runtime, logging in first if needed.
@@ -120,7 +148,10 @@ impl CondoMcp {
     /// Merge the per-domain routers. Each domain owns its own file and its own router;
     /// this is the one place they come together, and the only line a new domain touches.
     fn build_router() -> ToolRouter<Self> {
-        Self::library_router() + Self::calendar_router() + Self::announcements_router()
+        Self::library_router()
+            + Self::calendar_router()
+            + Self::announcements_router()
+            + Self::violations_router()
     }
 }
 
@@ -164,6 +195,7 @@ mod tests {
                 logged_in: Arc::new(Mutex::new(logged_in)),
                 root: 1,
                 creds_path: "<test>".into(),
+                download_dir: PathBuf::from("<unused>"),
                 tool_router: CondoMcp::build_router(),
             }
         })
