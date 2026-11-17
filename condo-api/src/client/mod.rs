@@ -1,13 +1,14 @@
 pub mod announcements;
 pub mod calendar;
+pub mod directory;
 pub mod library;
 pub mod violations;
 
 use crate::credentials::Credentials;
 use crate::error::ClientError;
 use crate::model::{
-    AnnouncementDetail, AnnouncementSummary, Entry, Event, FileMeta, SavedAttachment,
-    ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
+    AnnouncementDetail, AnnouncementSummary, DirectoryPage, DirectoryQuery, Entry, Event, FileMeta,
+    SavedAttachment, ViolationDetail, ViolationFilterOptions, ViolationPage, ViolationQuery,
 };
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -68,13 +69,22 @@ pub trait ViolationsApi {
     ) -> Result<SavedAttachment, ClientError>;
 }
 
+pub trait DirectoryApi {
+    /// One page of the owner directory, optionally filtered by a search term (the site
+    /// matches unit and name only).
+    fn list_directory(&self, q: &DirectoryQuery) -> Result<DirectoryPage, ClientError>;
+}
+
 /// Every domain trait at once; blanket-implemented, so it never needs a manual impl.
 pub trait CondoClient:
-    LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi
+    LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi + DirectoryApi
 {
 }
 
-impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi> CondoClient for T {}
+impl<T: LoginApi + LibraryApi + CalendarApi + AnnouncementsApi + ViolationsApi + DirectoryApi>
+    CondoClient for T
+{
+}
 
 pub struct HttpCondoClient {
     /// The authenticated client: session cookies, redirects never followed.
@@ -272,6 +282,12 @@ impl AnnouncementsApi for HttpCondoClient {
 
     fn get_announcement(&self, id: u64) -> Result<AnnouncementDetail, ClientError> {
         self.with_reauth(|| self.get_announcement_once(id))
+    }
+}
+
+impl DirectoryApi for HttpCondoClient {
+    fn list_directory(&self, q: &DirectoryQuery) -> Result<DirectoryPage, ClientError> {
+        self.with_reauth(|| self.list_directory_once(q))
     }
 }
 

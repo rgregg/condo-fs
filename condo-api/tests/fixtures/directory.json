@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "unitName": "101",
+      "firstName": "Alex",
+      "lastName": "Example",
+      "phoneNumbers": [
+        { "number": "(555) 010-0101", "type": "Cell" },
+        { "number": "(555) 010-0102", "type": "Home" }
+      ],
+      "emailAddress": "alex.example@example.com",
+      "onSiteAddress": { "lines": ["101 Sample Lane", "Testville, ZZ 00000"], "countryLocalizationKey": "UnitedStates" },
+      "offSiteAddress": null
+    },
+    {
+      "unitName": "102",
+      "firstName": "Blake",
+      "lastName": "Sample",
+      "phoneNumbers": [],
+      "emailAddress": "blake@example.com",
+      "onSiteAddress": null,
+      "offSiteAddress": null
+    },
+    {
+      "unitName": "103",
+      "firstName": "Casey",
+      "lastName": "Placeholder",
+      "phoneNumbers": [{ "number": "(555) 010-0103", "type": "Other" }],
+      "emailAddress": null,
+      "onSiteAddress": { "lines": ["103 Sample Lane", "Testville, ZZ 00000"], "countryLocalizationKey": "UnitedStates" },
+      "offSiteAddress": null
+    },
+    {
+      "unitName": "101",
+      "firstName": "Drew",
+      "lastName": "Example",
+      "phoneNumbers": [{ "number": "(555) 010-0104", "type": "Cell" }],
+      "emailAddress": "drew.example@example.com",
+      "onSiteAddress": null,
+      "offSiteAddress": null
+    }
+  ],
+  "pagination": { "page": 1, "pageSize": 25, "totalItems": 4, "totalPages": 1, "hasNextPage": false, "hasPreviousPage": false }
+}

@@ -1,5 +1,6 @@
 pub mod announcements;
 pub mod calendar;
+pub mod directory;
 pub(crate) mod html;
 pub mod library;
 pub mod violations;
@@ -9,6 +10,9 @@ pub use announcements::{
     Attachment,
 };
 pub use calendar::{parse_event_list, Event};
+pub use directory::{
+    parse_directory_page, DirectoryEntry, DirectoryPage, DirectoryPhone, DirectoryQuery,
+};
 pub use library::{parse_file_list, Entry, FileMeta};
 pub use violations::{
     parse_violation_detail, parse_violation_filters, parse_violation_page, SavedAttachment,
