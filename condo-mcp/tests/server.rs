@@ -1240,3 +1240,450 @@ async fn download_errors_never_carry_the_signed_url_or_key() {
     assert!(err.message.to_lowercase().contains("attachment"), "{text}");
     client.cancel().await.unwrap();
 }
+
+// ---- search_directory ----
+
+fn directory_page(rows: &[(&str, &str, &str)], total: u32, has_next: bool) -> String {
+    let data: Vec<_> = rows
+        .iter()
+        .map(|(unit, first, last)| {
+            serde_json::json!({
+                "unitName": unit, "firstName": first, "lastName": last,
+                "phoneNumbers": [], "emailAddress": null,
+                "onSiteAddress": null, "offSiteAddress": null
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "data": data,
+        "pagination": {
+            "page": 1, "pageSize": 100, "totalItems": total, "totalPages": 1,
+            "hasNextPage": has_next, "hasPreviousPage": false
+        }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn search_directory_is_advertised_with_a_privacy_note() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let client = connect(&server, 137473).await;
+
+    let tools = client.list_all_tools().await.unwrap();
+    let t = tools
+        .iter()
+        .find(|t| t.name == "search_directory")
+        .expect("search_directory advertised");
+    let desc = t.description.clone().unwrap_or_default();
+    assert!(desc.contains("personal contact information"), "{desc}");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_with_no_arguments_lists_the_first_entries() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let body = fixture("directory.json");
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "1")
+            .query_param("pageSize", "50");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(body);
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(&client, "search_directory", serde_json::json!({})).await;
+
+    m.assert();
+    assert_eq!(json["total"], 4);
+    assert_eq!(json["returned"], 4);
+    assert_eq!(json["complete"], true);
+    let a = &json["entries"][0];
+    assert_eq!(a["unit"], "101");
+    assert_eq!(a["first_name"], "Alex");
+    assert_eq!(a["phones"][0]["number"], "(555) 010-0101");
+    assert_eq!(a["phones"][0]["type"], "Cell");
+    assert_eq!(a["email"], "alex.example@example.com");
+    assert_eq!(a["address"][0], "101 Sample Lane");
+    let b = &json["entries"][1];
+    assert_eq!(b["phones"].as_array().unwrap().len(), 0);
+    assert!(b["address"].as_array().unwrap().is_empty());
+    assert!(json["entries"][2]["email"].is_null());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_sends_the_search_text() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("searchTerm", "Example");
+        then.status(200)
+            .body(directory_page(&[("101", "Alex", "Example")], 1, false));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "search": " Example " }),
+    )
+    .await;
+
+    m.assert();
+    assert_eq!(json["returned"], 1);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_unit_filter_is_exact_and_searches_by_unit() {
+    let server = MockServer::start();
+    mock_login(&server);
+    // The site's search is a substring match, so unit "10" also brings back 101 and 110.
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("searchTerm", "10")
+            .query_param("pageSize", "100");
+        then.status(200).body(directory_page(
+            &[
+                ("101", "A", "One"),
+                ("10", "B", "Two"),
+                ("110", "C", "Three"),
+            ],
+            3,
+            false,
+        ));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "unit": "10" }),
+    )
+    .await;
+
+    m.assert();
+    assert_eq!(json["returned"], 1);
+    assert_eq!(json["entries"][0]["last_name"], "Two");
+    assert_eq!(
+        json["total"], 3,
+        "total is the site's count for the search text"
+    );
+    assert_eq!(json["complete"], true);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_unit_filter_ignores_case() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/web/PhoneBook/Directory");
+        then.status(200)
+            .body(directory_page(&[("A12", "A", "One")], 1, false));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "unit": "a12" }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 1);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_reports_when_limit_cut_the_list() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/web/PhoneBook/Directory");
+        then.status(200).body(directory_page(
+            &[("1", "A", "A"), ("2", "B", "B"), ("3", "C", "C")],
+            314,
+            true,
+        ));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "limit": 2 }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 2);
+    assert_eq!(json["total"], 314);
+    assert_eq!(json["complete"], false);
+    assert_eq!(json["offset"], 0);
+    assert_eq!(
+        json["next_offset"], 2,
+        "limit cut the list, so say where to resume"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_exactly_limit_with_nothing_more_is_complete() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/web/PhoneBook/Directory");
+        then.status(200).body(directory_page(
+            &[("1", "A", "A"), ("2", "B", "B")],
+            2,
+            false,
+        ));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "limit": 2 }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 2);
+    assert_eq!(json["complete"], true);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_unit_scan_stops_at_the_page_cap() {
+    let server = MockServer::start();
+    mock_login(&server);
+    // Every page says there is more and never contains the unit.
+    let m = server.mock(|when, then| {
+        when.method(GET).path("/web/PhoneBook/Directory");
+        then.status(200)
+            .body(directory_page(&[("999", "A", "A")], 5000, true));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "unit": "1" }),
+    )
+    .await;
+
+    assert_eq!(m.hits(), 10, "scan is capped at 10 pages");
+    assert_eq!(json["returned"], 0);
+    assert_eq!(json["complete"], false);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_unit_scan_continues_to_later_pages() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "1");
+        then.status(200)
+            .body(directory_page(&[("999", "A", "A")], 2, true));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "2");
+        then.status(200)
+            .body(directory_page(&[("1", "B", "B")], 2, false));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "unit": "1" }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 1);
+    assert_eq!(json["entries"][0]["first_name"], "B");
+    assert_eq!(json["complete"], true);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_rejects_a_bad_limit() {
+    let server = MockServer::start();
+    mock_login(&server);
+    let client = connect(&server, 137473).await;
+
+    for bad in [0, 201] {
+        let err = mcp_error(
+            client
+                .call_tool(
+                    CallToolRequestParams::new("search_directory")
+                        .with_arguments(args(serde_json::json!({ "limit": bad }))),
+                )
+                .await,
+        );
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_site_change_is_a_structure_error_not_a_crash() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/web/PhoneBook/Directory");
+        then.status(200).body("<html>Invalid address</html>");
+    });
+    let client = connect(&server, 137473).await;
+
+    let err = mcp_error(
+        client
+            .call_tool(CallToolRequestParams::new("search_directory"))
+            .await,
+    );
+
+    assert!(
+        err.message.contains("Unexpected response shape"),
+        "{}",
+        err.message
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_offset_maps_to_a_page_and_a_skip() {
+    let server = MockServer::start();
+    mock_login(&server);
+    // offset 120 = page 2 of 100, skipping the first 20 rows of that page.
+    let units: Vec<String> = (0..100).map(|i| format!("u{i}")).collect();
+    let rows: Vec<(&str, &str, &str)> = units.iter().map(|u| (u.as_str(), "F", "L")).collect();
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "2")
+            .query_param("pageSize", "100");
+        then.status(200).body(directory_page(&rows, 314, true));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "offset": 120, "limit": 10 }),
+    )
+    .await;
+
+    m.assert();
+    assert_eq!(json["returned"], 10);
+    assert_eq!(json["entries"][0]["unit"], "u20");
+    assert_eq!(json["entries"][9]["unit"], "u29");
+    assert_eq!(json["offset"], 120);
+    assert_eq!(json["next_offset"], 130);
+    assert_eq!(json["complete"], false);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_offset_skips_matching_entries_under_a_unit_filter() {
+    let server = MockServer::start();
+    mock_login(&server);
+    // Three entries on unit 7 with a different unit in between: the offset counts
+    // matches, not site rows.
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "1");
+        then.status(200).body(directory_page(
+            &[
+                ("7", "A", "A"),
+                ("70", "X", "X"),
+                ("7", "B", "B"),
+                ("7", "C", "C"),
+            ],
+            4,
+            false,
+        ));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "unit": "7", "offset": 1, "limit": 1 }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 1);
+    assert_eq!(json["entries"][0]["first_name"], "B");
+    assert_eq!(json["next_offset"], 2);
+    assert_eq!(json["complete"], false);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_last_page_is_complete_with_no_next_offset() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "1");
+        then.status(200).body(directory_page(
+            &[("1", "A", "A"), ("2", "B", "B"), ("3", "C", "C")],
+            3,
+            false,
+        ));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "offset": 1, "limit": 50 }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 2);
+    assert_eq!(json["complete"], true);
+    assert!(json["next_offset"].is_null());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn search_directory_offset_past_the_end_is_empty_and_complete() {
+    let server = MockServer::start();
+    mock_login(&server);
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/web/PhoneBook/Directory")
+            .query_param("page", "4");
+        then.status(200).body(directory_page(&[], 314, false));
+    });
+    let client = connect(&server, 137473).await;
+
+    let json = call(
+        &client,
+        "search_directory",
+        serde_json::json!({ "offset": 300 }),
+    )
+    .await;
+
+    assert_eq!(json["returned"], 0);
+    assert_eq!(json["total"], 314);
+    assert_eq!(json["complete"], true);
+    assert!(json["next_offset"].is_null());
+    client.cancel().await.unwrap();
+}

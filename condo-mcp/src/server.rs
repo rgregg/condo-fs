@@ -152,6 +152,7 @@ impl CondoMcp {
             + Self::calendar_router()
             + Self::announcements_router()
             + Self::violations_router()
+            + Self::directory_router()
     }
 }
 

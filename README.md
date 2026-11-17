@@ -285,6 +285,14 @@ Currently available tools:
   record when a violation's stage changed, so the tools never infer when a warning or a
   fine notice was sent; on fine-track stages `get_violation` says so and points at the
   timeline. All violation times are the association's local time, with no zone.
+- **`search_directory`** — search the owner directory (the site's phone book): unit, owner
+  name, phone numbers with their type, email and on-site address. `search` matches unit
+  numbers and names only (not email, phone or street); `unit` keeps only entries on that
+  exact unit. With neither it lists the first `limit` entries (default 50, max 200); pass
+  `offset` (the previous result's `next_offset`) to page on. Reports the site's `total` and
+  whether the results are `complete`. Phone, email and address are
+  often missing, and one owner can appear on several entries. This is residents' personal
+  contact information, so treat tool output with care.
 
 Build it the same way as `condo-fs`:
 
