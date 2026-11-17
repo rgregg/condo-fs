@@ -1,5 +1,6 @@
 pub mod announcements;
 pub mod calendar;
+pub mod directory;
 pub mod library;
 pub mod violations;
 
